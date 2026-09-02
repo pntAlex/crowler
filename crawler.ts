@@ -571,7 +571,7 @@ export const isBroken = (r: Row) =>
 const isHtml = (t: string) => t === "" || t === "text/html" || t === "application/xhtml+xml";
 
 /** Referers are only shipped for broken URLs — that is the only place the UI shows them. */
-function wire(r: Row) {
+export function wire(r: Row) {
   const o: Record<string, unknown> = {
     u: r.url, s: r.status, k: r.kind, d: r.depth, m: r.ms, b: r.bytes,
     t: r.type, n: r.refCount,

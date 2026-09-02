@@ -4,6 +4,7 @@ node_modules
 *.log
 *.csv
 crowler
+data
 crawler.test.ts
 fixture.ts
 README.md

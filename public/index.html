@@ -33,9 +33,53 @@ body{
   -webkit-font-smoothing:antialiased;
   font-variant-numeric:tabular-nums;
 }
-.wrap{max-width:1180px;margin:0 auto;padding:0 20px 72px}
+.app{display:flex;align-items:flex-start}
+.wrap{flex:1;min-width:0;max-width:1180px;margin:0 auto;padding:0 20px 72px}
+
+/* ---- history rail ---- */
+.side{
+  position:sticky;top:0;flex:none;width:266px;height:100vh;
+  display:flex;flex-direction:column;background:var(--card);border-right:1px solid var(--line);
+}
+.side-h{display:flex;align-items:center;gap:10px;padding:17px 14px 13px}
+.side-h .mark{flex:1;min-width:0}
+.new{
+  border:1px solid var(--line);border-radius:5px;height:28px;padding:0 10px;flex:none;
+  font-size:11.5px;letter-spacing:.03em;color:var(--ink-2);background:var(--paper);
+}
+.new:hover{color:var(--ink);border-color:var(--ink-3)}
+.side-t{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:2px 16px 6px}
+.side-list{flex:1;overflow-y:auto;padding:0 8px 14px;display:grid;gap:2px;align-content:start}
+.ses-w{position:relative;min-width:0}
+.side-empty{margin:0;padding:10px 8px;color:var(--ink-3);font-size:11.5px;line-height:1.6;font-family:var(--sans)}
+.ses{
+  display:block;width:100%;text-align:left;padding:8px 9px 9px;border-radius:6px;
+  border:1px solid transparent;cursor:pointer;
+}
+.ses:hover{background:var(--line-soft)}
+.ses[aria-current=true]{background:var(--line-soft);border-color:var(--line)}
+.ses-top{display:flex;align-items:center;gap:7px;min-width:0}
+.dot{width:7px;height:7px;border-radius:2px;flex:none;background:var(--sx)}
+.dot[data-s=run]{background:var(--accent);animation:blink 1s steps(2,start) infinite}
+.dot[data-s=ok]{background:var(--s2)}
+.dot[data-s=bad]{background:var(--s4)}
+.ses-host{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12.5px;letter-spacing:-.01em;padding-right:16px;
+}
+.ses-sub{display:block;color:var(--ink-2);font-size:11px;margin:3px 0 0 14px}
+.ses-when{display:block;color:var(--ink-3);font-size:10.5px;margin:1px 0 0 14px}
+.ses-x{
+  position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:4px;
+  color:var(--ink-3);font-size:15px;line-height:1;opacity:0;
+}
+.ses-w:hover .ses-x,.ses-x:focus-visible{opacity:1}
+.ses-x:hover{color:var(--s4);background:var(--s4-bg)}
 
 /* ---- header ---- */
+.crumb{display:flex;gap:9px;flex-wrap:wrap;align-items:baseline;color:var(--ink-3);font-size:11.5px;letter-spacing:.02em}
+.crumb b{color:var(--ink);font-weight:600;font-size:14px;letter-spacing:-.01em}
+.crumb .sep::before{content:"·";margin-right:9px}
 .top{display:flex;align-items:center;gap:12px;padding:18px 0 16px}
 .mark{display:flex;align-items:baseline;gap:9px;font-weight:600;letter-spacing:-.01em;font-size:15px}
 .mark b{font-weight:600}
@@ -230,6 +274,11 @@ td.dim{color:var(--ink-3)}
 .pill.k4{color:var(--s4);background:var(--s4-bg)} .pill.k5{color:var(--s5);background:var(--s5-bg)}
 .pill.kx{color:var(--sx);background:var(--sx-bg)}
 .kind{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+@media (max-width:900px){
+  .app{display:block}
+  .side{position:static;width:auto;height:auto;border-right:none;border-bottom:1px solid var(--line)}
+  .side-list{max-height:168px;grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+}
 @media (max-width:640px){
   .launch{flex-wrap:wrap}
   .go,.halt{flex:1}
@@ -247,10 +296,21 @@ td.dim{color:var(--ink-3)}
 </style>
 </head>
 <body>
+<div class="app">
+
+  <aside class="side">
+    <div class="side-h">
+      <div class="mark"><i></i><b>crowler</b></div>
+      <button class="new" id="new" type="button">Nouvel audit</button>
+    </div>
+    <p class="side-t">Historique</p>
+    <div class="side-list" id="side-list"></div>
+  </aside>
+
 <div class="wrap">
 
   <header class="top">
-    <div class="mark"><i></i><b>crowler</b><span>audit de liens</span></div>
+    <div class="crumb" id="crumb"><b>Nouvel audit</b><span>audit de liens</span></div>
   </header>
 
   <form class="launch" id="form">
@@ -312,12 +372,14 @@ td.dim{color:var(--ink-3)}
       <input id="q" type="search" placeholder="filtrer…" spellcheck="false" aria-label="Filtrer les URLs">
       <button class="mini" id="dl-broken" disabled>Exporter les liens cassés</button>
       <button class="mini" id="dl-pages" disabled>Exporter les pages</button>
+      <button class="mini" id="del" disabled>Supprimer</button>
     </div>
   </nav>
 
   <div class="panel" id="panel" role="tabpanel">
     <p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>
   </div>
+</div>
 </div>
 
 <script>
@@ -327,11 +389,15 @@ const BOOLS = ["checkExternal","checkAssets","respectRobots","includeSubdomains"
 const NUMS = ["concurrency","delayMs","maxDepth","maxPages","timeoutMs"];
 const MAX_TABLE_ROWS = 500;
 const TITLE = document.title;
+const IDLE = '<p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>';
+const WHEN = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
 const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?}
+let sessions = [];           // en-têtes d'audits, du plus récent au plus ancien
 let stats = null, id = null, es = null, target = "";
 let view = "broken", filter = null, query = "", sortKey = "s", sortDir = -1;
-let painting = false, pendingPaint = false, halting = false;
+let painting = false, pendingPaint = false, halting = false, starting = false;
+let notice = null;   // message d'erreur affiché à la place du panneau vide
 
 /* ---- status classing ---- */
 const klass = (r) => {
@@ -344,6 +410,7 @@ const klass = (r) => {
 const broken = (r) => r.s >= 400 || (r.s === 0 && !!r.e && r.e !== "aborted"); // ni en file, ni annulée
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const linkable = (u) => /^https?:\/\//i.test(u);
+const hostOf = (u) => { try { return new URL(u).hostname; } catch { return u; } };
 const short = (u) => u.replace(/^https?:\/\//, "").replace(/\/$/, "") || u;
 const dur = (ms) => (ms < 950 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 const bytes = (n) => !n ? "" : n < 1024 ? n + " o" : n < 1048576 ? (n/1024).toFixed(0) + " ko" : (n/1048576).toFixed(1) + " Mo";
@@ -368,6 +435,7 @@ $("form").addEventListener("submit", async (e) => {
 
   reset();
   busy(true);
+  starting = true;
   try {
     const res = await fetch("/api/crawl", {
       method: "POST",
@@ -378,12 +446,17 @@ $("form").addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(data.error || "démarrage impossible");
     id = data.id;
     target = data.start;
-    $("dl-broken").disabled = $("dl-pages").disabled = false;
+    starting = false;
+    tools(true);
+    crumb({ host: hostOf(target), startedAt: Date.now(), reason: "", stats: { live: true } });
     connect();
+    loadSessions();
   } catch (err) {
+    starting = false;
     busy(false);
     $("readout").hidden = true;
-    $("panel").innerHTML = '<p class="note"><b class="err">Audit non démarré</b>' + esc(err.message) + "</p>";
+    notice = '<p class="note"><b class="err">Audit non démarré</b>' + esc(err.message) + "</p>";
+    render();
   }
 });
 
@@ -414,9 +487,166 @@ $("halt").addEventListener("click", () => {
 });
 $("dl-pages").addEventListener("click", () => id && (location.href = `/api/crawl/${id}/pages.csv`));
 $("dl-broken").addEventListener("click", () => id && (location.href = `/api/crawl/${id}/broken.csv`));
+$("del").addEventListener("click", () => id && drop(id));
+
+/* ---- history rail ---- */
+const tools = (on) => { for (const b of ["dl-broken", "dl-pages", "del"]) $(b).disabled = !on; };
+const live = (m) => !!(m.stats && m.stats.live);
+
+function state(m) {
+  if (live(m)) return "run";
+  if (m.broken > 0) return "bad";
+  if (m.reason === "interrompu" || /arrêté/.test(m.reason)) return "stop";
+  return "ok";
+}
+
+function summary(m) {
+  if (live(m)) return `en cours · ${NUM.format(m.stats ? m.stats.done : 0)} URLs`;
+  const n = m.stats ? m.stats.total : 0;
+  const bad = m.broken
+    ? `${NUM.format(m.broken)} ${m.broken === 1 ? "lien cassé" : "liens cassés"}`
+    : m.reason === "interrompu" ? "interrompu" : "aucun lien cassé";
+  return `${NUM.format(n)} URL${n === 1 ? "" : "s"} · ${bad}`;
+}
+
+async function loadSessions() {
+  try {
+    sessions = await (await fetch("/api/sessions")).json();
+  } catch {
+    return; // le serveur répondra au prochain rafraîchissement
+  }
+  renderSide();
+}
+
+function renderSide() {
+  const box = $("side-list");
+  if (!sessions.length) {
+    box.innerHTML = '<p class="side-empty">Aucun audit enregistré pour l’instant. Le premier apparaîtra ici et y restera après un redémarrage.</p>';
+    return;
+  }
+  box.innerHTML = sessions.map((m) =>
+    `<div class="ses-w">` +
+      `<button class="ses" type="button" data-id="${esc(m.id)}" aria-current="${m.id === id}">` +
+        `<span class="ses-top"><i class="dot" data-s="${state(m)}"></i>` +
+        `<span class="ses-host">${esc(m.host)}</span></span>` +
+        `<span class="ses-sub">${esc(summary(m))}</span>` +
+        `<span class="ses-when">${esc(WHEN.format(new Date(m.startedAt)))}</span>` +
+      `</button>` +
+      `<button class="ses-x" type="button" data-del="${esc(m.id)}" title="Supprimer cet audit" aria-label="Supprimer cet audit">×</button>` +
+    `</div>`).join("");
+}
+
+$("side-list").addEventListener("click", (e) => {
+  const x = e.target.closest("[data-del]");
+  if (x) { e.stopPropagation(); return drop(x.dataset.del); }
+  const b = e.target.closest(".ses");
+  if (b && b.dataset.id !== id) show(b.dataset.id);
+});
+
+async function drop(sid) {
+  const m = sessions.find((x) => x.id === sid);
+  if (m && live(m)) return alert("Cet audit est en cours : arrêtez-le avant de le supprimer.");
+  if (!confirm("Supprimer cet audit et ses résultats ?")) return;
+  await fetch(`/api/crawl/${sid}`, { method: "DELETE" }).catch(() => {});
+  if (sid === id) blank();
+  await loadSessions();
+}
+
+/** Charge un audit : reprise en direct s'il tourne encore, relecture sinon. */
+async function show(sid) {
+  if (es) { es.close(); es = null; }
+  halting = false;
+  let m;
+  try {
+    const res = await fetch(`/api/crawl/${sid}`);
+    if (!res.ok) throw new Error();
+    m = await res.json();
+  } catch {
+    blank();
+    return loadSessions();
+  }
+  id = m.id; target = m.start; stats = m.stats; filter = null; notice = null;
+  rows.clear();
+  applyOpts(m);
+  tools(true);
+  crumb(m);
+  renderSide();
+  $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+  $("readout").hidden = false;
+  $("readout").dataset.state = live(m) ? "run" : "done";
+
+  if (live(m)) {
+    busy(true);
+    $("panel").innerHTML = '<p class="note">Reprise de l’audit en cours…</p>';
+    return connect();  // le snapshot SSE rapatrie les lignes déjà collectées
+  }
+  busy(false);
+  $("panel").innerHTML = '<p class="note">Lecture de l’audit…</p>';
+  await replay(sid);
+  if (sid !== id) return; // l'utilisateur a changé d'audit entre-temps
+  finish(m, false);
+  render();
+}
+
+/** Relit les lignes d'un audit terminé, en flux : le NDJSON n'est jamais bufferisé entier. */
+async function replay(sid) {
+  let res;
+  try {
+    res = await fetch(`/api/crawl/${sid}/rows`);
+    if (!res.ok) throw new Error();
+  } catch {
+    return;
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  const take = (line) => { if (line) { const r = JSON.parse(line); rows.set(r.u, r); } };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (sid !== id) return reader.cancel().catch(() => {});
+    buf += value;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) { take(buf.slice(0, i)); buf = buf.slice(i + 1); }
+  }
+  take(buf.trim());
+}
+
+/** Remet le formulaire sur les réglages de l'audit affiché : le relancer est à un clic. */
+function applyOpts(m) {
+  $("url").value = m.start;
+  if (!m.opts) return;
+  for (const k of BOOLS) if (typeof m.opts[k] === "boolean") $(k).checked = m.opts[k];
+  for (const k of NUMS) if (Number.isFinite(m.opts[k])) $(k).value = m.opts[k];
+  $("exclude").value = (m.opts.exclude || []).join("\n");
+}
+
+function crumb(m) {
+  $("crumb").innerHTML = m
+    ? `<b>${esc(m.host)}</b><span class="sep">${esc(WHEN.format(new Date(m.startedAt)))}</span>` +
+      (live(m) ? "" : `<span class="sep">${esc(m.reason || "terminé")}</span>`)
+    : "<b>Nouvel audit</b><span>audit de liens</span>";
+}
+
+/** Écran vide, prêt pour un nouvel audit. */
+function blank() {
+  if (es) { es.close(); es = null; }
+  id = null; target = ""; stats = null; filter = null; halting = false; notice = null;
+  rows.clear();
+  busy(false);
+  tools(false);
+  crumb(null);
+  renderSide();
+  $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+  $("readout").hidden = true;
+  document.title = TITLE;
+  render();
+  $("panel").innerHTML = IDLE;
+  $("url").focus();
+}
+$("new").addEventListener("click", blank);
 
 function reset() {
-  rows.clear(); stats = null; filter = null;
+  rows.clear(); stats = null; filter = null; id = null; notice = null;
   if (es) { es.close(); es = null; }
   $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
   $("readout").hidden = false;
@@ -442,7 +672,8 @@ function connect() {
     }
     paint();
   };
-  es.addEventListener("gone", () => { es.close(); es = null; });
+  // Le job a été évincé de la mémoire : l'audit reste lisible sur disque.
+  es.addEventListener("gone", () => { es.close(); es = null; if (id) show(id); });
   es.onerror = () => { if (es && es.readyState === 2) { es = null; busy(false); } };
 }
 
@@ -499,6 +730,12 @@ function render() {
   const bad = all.filter(broken);
   $("n-broken").textContent = NUM.format(bad.length);
   $("n-all").textContent = NUM.format(all.length);
+  if (!id && !starting) { $("panel").innerHTML = notice || IDLE; return; }
+  // Pendant le crawl, l'entrée d'historique correspondante suit le compteur.
+  if (stats && stats.live) {
+    const sub = $("side-list").querySelector(`[data-id="${id}"] .ses-sub`);
+    if (sub) sub.textContent = `en cours · ${NUM.format(stats.done)} URLs`;
+  }
 
   const list = keep(view === "broken" ? bad : all);
   $("panel").innerHTML = view === "broken" ? brokenView(list, bad.length) : tableView(list, all.length);
@@ -589,9 +826,21 @@ function tableView(list, total) {
 
 window.sortBy = (k) => { sortDir = k === sortKey ? -sortDir : (k === "u" || k === "t" ? 1 : -1); sortKey = k; render(); };
 
-/* ---- end of crawl ---- */
-function finish(m) {
+/* ---- end of crawl ----
+   `now` distingue un audit qui vient de se terminer sous les yeux de
+   l'utilisateur d'un audit relu depuis l'historique : pas de notification, et
+   pas de rechargement de la liste, pour le second. */
+function finish(m, now = true) {
   const bad = [...rows.values()].filter(broken).length;
+  if (!m.stats) {
+    $("readout").dataset.state = "done";
+    $("rd-tag").textContent = m.reason || "interrompu";
+    $("rd-done").textContent = "0";
+    $("rd-unit").textContent = "URL enregistrée";
+    $("rd-rest").innerHTML = "";
+    $("panel").innerHTML = '<p class="note"><b>Audit interrompu</b>Le serveur s’est arrêté pendant ce crawl : aucun résultat n’a été enregistré.</p>';
+    return;
+  }
   const secs = dur(m.stats.elapsed);
   $("readout").dataset.state = "done";
   $("rd-tag").textContent = m.reason;
@@ -607,7 +856,9 @@ function finish(m) {
     ? `${NUM.format(m.stats.done)} URLs explorées, ${NUM.format(bad)} ${bad === 1 ? "lien cassé" : "liens cassés"} en ${secs}.`
     : `${NUM.format(m.stats.done)} URLs explorées, aucun lien cassé, en ${secs}.`;
   $("sr").textContent = "Audit terminé. " + msg;
+  if (!now) return;
   notifyDone(msg);
+  loadSessions();
 }
 
 /* Notification API needs a secure context (localhost counts) and a user gesture
@@ -633,9 +884,7 @@ function notifyHint() {
 
 function notifyDone(msg) {
   if (!$("notify").checked || !("Notification" in window) || Notification.permission !== "granted") return;
-  let name = target;
-  try { name = new URL(target).hostname; } catch { /* keep the raw string */ }
-  const n = new Notification(`Audit terminé — ${name}`, { body: msg, tag: "crowler-" + id });
+  const n = new Notification(`Audit terminé — ${hostOf(target)}`, { body: msg, tag: "crowler-" + id });
   n.onclick = () => { window.focus(); n.close(); };
 }
 
@@ -662,7 +911,16 @@ notifyHint();
 $("url").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); $("form").requestSubmit(); }
 });
-$("url").focus();
+
+/* ---- boot ----
+   Au chargement on reprend l'audit en cours s'il y en a un, sinon le dernier
+   enregistré : un rafraîchissement de page ne perd plus rien. */
+(async () => {
+  await loadSessions();
+  const pick = sessions.find(live) || sessions[0];
+  if (pick) await show(pick.id);
+  else $("url").focus();
+})();
 </script>
 </body>
 </html>

@@ -1,4 +1,5 @@
-/** CSV shapes for the two exports. Shared by the server and the tests. */
+/** CSV shapes for the two exports. Shared by the server and the tests.
+ *  Both accept a live crawl's rows or an audit streamed back from disk. */
 import { isBroken, type Row } from "./crawler";
 
 export const PAGES_HEADER = [
@@ -7,8 +8,8 @@ export const PAGES_HEADER = [
 ];
 
 /** One row per URL. */
-export function* pagesRows(rows: Iterable<Row>) {
-  for (const r of rows) {
+export async function* pagesRows(rows: Iterable<Row> | AsyncIterable<Row>) {
+  for await (const r of rows) {
     yield [
       r.url, r.status || "", r.kind, r.depth, r.type, r.ms,
       r.bytes || "", r.redirect ?? "", r.error ?? "", r.refCount, r.refs[0]?.from ?? "",
@@ -25,8 +26,8 @@ export const BROKEN_HEADER = [
  * One row per (broken URL, referer) pair — the actionable worklist.
  * `total_referers` vs `referers_listed` exposes the per-URL referer cap.
  */
-export function* brokenRows(rows: Iterable<Row>) {
-  for (const r of rows) {
+export async function* brokenRows(rows: Iterable<Row> | AsyncIterable<Row>) {
+  for await (const r of rows) {
     if (!isBroken(r)) continue;
     const tail = [r.kind, r.refCount, r.refs.length];
     if (!r.refs.length) {

@@ -1,9 +1,10 @@
 import {
   compileExcludes, Crawl, DEFAULTS, isPrivateHost, matchExclude, MAX_EXCLUDES,
-  normalize, type Options,
+  normalize, wire, type Options, type Row,
 } from "./crawler";
 import { csvResponse } from "./csv";
 import { BROKEN_HEADER, brokenRows, PAGES_HEADER, pagesRows } from "./report";
+import * as store from "./store";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const BLOCK_PRIVATE = process.env.BLOCK_PRIVATE_IPS !== "0";
@@ -15,6 +16,7 @@ type Job = { crawl: Crawl; subs: Set<Sub> };
 
 const jobs = new Map<string, Job>();
 
+/** Only the *live* view of a crawl is capped: the audit itself stays on disk. */
 function gc() {
   for (const [id, job] of jobs) {
     if (jobs.size <= MAX_JOBS) break;
@@ -62,6 +64,29 @@ function job(req: { params: { id: string } }): Job | null {
   return jobs.get(req.params.id) ?? null;
 }
 
+// ---- sessions --------------------------------------------------------------
+
+/**
+ * Header for one audit, live crawl first, otherwise what is on disk. A stored
+ * audit still marked running has no live job behind it: the process died mid-crawl.
+ */
+async function meta(id: string): Promise<store.Meta | null> {
+  const j = jobs.get(id);
+  if (j) return store.metaOf(j.crawl);
+  const m = await store.read(id);
+  if (!m) return null;
+  if (!m.finishedAt) return { ...m, finishedAt: m.startedAt, reason: "interrompu" };
+  return m;
+}
+
+/** The rows of an audit: from memory while the job is live, from disk afterwards. */
+async function rowsOf(id: string): Promise<Iterable<Row> | AsyncIterable<Row> | null> {
+  const j = jobs.get(id);
+  if (j) return j.crawl.rows.values();
+  const m = await store.read(id);
+  return m ? store.rows(id) : null;
+}
+
 // ---- server ----------------------------------------------------------------
 
 const server = Bun.serve({
@@ -73,6 +98,12 @@ const server = Bun.serve({
     "/": () => new Response(INDEX, { headers: { "content-type": "text/html; charset=utf-8" } }),
     "/favicon.ico": new Response(null, { status: 204 }),
     "/health": new Response("ok"),
+
+    "/api/sessions": async () => {
+      const stored = await store.list();
+      const live = await Promise.all(stored.map((m) => meta(m.id)));
+      return Response.json(live.filter(Boolean));
+    },
 
     "/api/crawl": {
       POST: async (req) => {
@@ -115,9 +146,58 @@ const server = Bun.serve({
         );
         jobs.set(crawl.id, { crawl, subs });
         gc();
-        crawl.run().catch((e) => console.error("crawl", crawl.id, e));
+        // The audit joins the history the moment it starts, so a page reloaded
+        // mid-crawl finds it and reattaches.
+        await store.begin(crawl).catch((e) => console.error("store", crawl.id, e));
+        crawl
+          .run()
+          .catch((e) => console.error("crawl", crawl.id, e))
+          .finally(() =>
+            store
+              .save(crawl)
+              .then(() => store.prune((id) => jobs.get(id)?.crawl.running === true))
+              .catch((e) => console.error("store", crawl.id, e)),
+          );
         return Response.json({ id: crawl.id, start: crawl.start, opts: crawl.opts });
       },
+    },
+
+    "/api/crawl/:id": {
+      GET: async (req) => {
+        const m = await meta(req.params.id);
+        return m ? Response.json(m) : bad("audit inconnu", 404);
+      },
+      DELETE: async (req) => {
+        const j = jobs.get(req.params.id);
+        if (j?.crawl.running) return bad("audit en cours : arrêtez-le d'abord");
+        jobs.delete(req.params.id);
+        const ok = await store.remove(req.params.id);
+        return ok ? Response.json({ ok: true }) : bad("audit inconnu", 404);
+      },
+    },
+
+    /** Replay of a finished audit, one wire row per line (NDJSON, streamed). */
+    "/api/crawl/:id/rows": async (req) => {
+      const src = await rowsOf(req.params.id);
+      if (!src) return bad("audit inconnu", 404);
+      const enc = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(c) {
+          let buf = "";
+          for await (const r of src) {
+            buf += JSON.stringify(wire(r)) + "\n";
+            if (buf.length > 64 * 1024) {
+              c.enqueue(enc.encode(buf));
+              buf = "";
+            }
+          }
+          if (buf) c.enqueue(enc.encode(buf));
+          c.close();
+        },
+      });
+      return new Response(stream, {
+        headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" },
+      });
     },
 
     "/api/crawl/:id/events": (req) => {
@@ -162,28 +242,26 @@ const server = Bun.serve({
       },
     },
 
-    "/api/crawl/:id/pages.csv": (req) => {
-      const j = job(req);
-      if (!j) return bad("crawl inconnu", 404);
-      return csvResponse(`pages-${host(j)}.csv`, PAGES_HEADER, () => pagesRows(j.crawl.rows.values()));
+    "/api/crawl/:id/pages.csv": async (req) => {
+      const src = await rowsOf(req.params.id);
+      if (!src) return bad("audit inconnu", 404);
+      return csvResponse(`pages-${await host(req.params.id)}.csv`, PAGES_HEADER, () => pagesRows(src));
     },
 
-    "/api/crawl/:id/broken.csv": (req) => {
-      const j = job(req);
-      if (!j) return bad("crawl inconnu", 404);
-      return csvResponse(`liens-casses-${host(j)}.csv`, BROKEN_HEADER, () => brokenRows(j.crawl.rows.values()));
+    "/api/crawl/:id/broken.csv": async (req) => {
+      const src = await rowsOf(req.params.id);
+      if (!src) return bad("audit inconnu", 404);
+      return csvResponse(`liens-casses-${await host(req.params.id)}.csv`, BROKEN_HEADER, () => brokenRows(src));
     },
   },
 
   fetch: () => new Response("Not found", { status: 404 }),
 });
 
-function host(j: Job): string {
-  try {
-    return new URL(j.crawl.start).hostname;
-  } catch {
-    return j.crawl.id;
-  }
+async function host(id: string): Promise<string> {
+  const j = jobs.get(id);
+  if (j) return store.hostOf(j.crawl.start, id);
+  return (await store.read(id))?.host ?? id;
 }
 
 console.log(`crowler → http://localhost:${server.port}  (réseaux privés ${BLOCK_PRIVATE ? "bloqués" : "autorisés"})`);

@@ -16,6 +16,9 @@ bun server.ts
 
 Puis <http://localhost:3000>.
 
+Les audits sont enregistrés dans `./data` (paramétrable avec `DATA_DIR`) : la barre de gauche
+en garde l'historique et un audit passé se rouvre, avec ses exports, après un redémarrage.
+
 Pour essayer sans site sous la main, un site de démonstration volontairement cassé est fourni :
 
 ```bash
@@ -28,11 +31,18 @@ l'auditer : `BLOCK_PRIVATE_IPS=0 bun server.ts`.
 ## Docker
 
 ```bash
-docker build -t crowler . && docker run -p 3000:3000 crowler
+docker build -t crowler . && docker run -p 3000:3000 -v crowler-data:/app/data crowler
 ```
 
-Image de 132 Mo, environ 60 Mo de RAM en usage. Variables d'environnement : `PORT` (3000) et
-`BLOCK_PRIVATE_IPS` (`1` par défaut dans l'image).
+Le volume porte l'historique des audits : sans lui, recréer le conteneur repart d'une ardoise
+vide. Image de 132 Mo, environ 60 Mo de RAM en usage.
+
+| Variable | Défaut | Effet |
+|---|---|---|
+| `PORT` | 3000 | port d'écoute |
+| `BLOCK_PRIVATE_IPS` | `1` dans l'image | refuse les cibles sur réseau privé |
+| `DATA_DIR` | `./data`, `/app/data` dans l'image | où sont stockés les audits |
+| `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
 
 Une variante binaire unique est disponible si l'empreinte de l'image compte :
 `bun run compile` produit un exécutable autonome déployable sur `scratch` ou `distroless`.
@@ -92,6 +102,32 @@ que de produire un audit d'une seule page. Maximum 25 motifs.
 
 Cette validation attrape le backtracking exponentiel, pas la lenteur polynomiale : un motif
 alambiqué peut encore coûter du temps, borné par la troncature des URLs à 2 000 caractères.
+
+## Historique
+
+Chaque audit lancé s'inscrit dans la barre de gauche et y reste. Cliquer sur une entrée
+recharge l'audit complet — répartition des statuts, liens cassés avec leurs referers, tableau
+des URLs, exports CSV — et remet le formulaire sur les réglages utilisés, pour relancer le même
+audit d'un clic. Un audit encore en cours se reprend en direct : rafraîchir la page pendant un
+crawl le retrouve et se rebranche sur son flux d'événements.
+
+Le stockage est un dossier par audit sous `DATA_DIR`, deux fichiers texte dedans :
+
+```
+data/ouviuok7/meta.json     cible, réglages, statistiques, nombre de liens cassés
+data/ouviuok7/rows.jsonl    une URL auditée par ligne
+```
+
+Pas de base de données, donc pas de schéma ni de migration : l'historique se lit avec `cat`, se
+filtre avec `grep`, se sauvegarde avec `cp` et se purge avec `rm`. Les lignes sont écrites et
+relues en flux, un audit de 200 000 URLs ne passe jamais entier par la mémoire — y compris à
+l'export, où le CSV d'un audit passé est produit en relisant le fichier ligne à ligne.
+
+`meta.json` est écrit à l'ouverture de l'audit puis réécrit à sa fermeture, et `rows.jsonl` est
+posé avant : un `finishedAt` non nul garantit donc que les lignes sont complètes. Un audit
+laissé à `0` est un crawl que l'arrêt du serveur a coupé ; il est affiché « interrompu ».
+
+Le dossier `data/` est ignoré par git et par le build Docker.
 
 ## Pendant le crawl
 
@@ -156,8 +192,11 @@ instance avec `BLOCK_PRIVATE_IPS=0` sur un réseau non maîtrisé.
 - Les liens créés par JavaScript après le chargement ne sont pas vus : le crawler lit le HTML
   servi, il n'exécute pas de navigateur.
 - `srcset` et `<meta http-equiv="refresh">` ne sont pas analysés.
-- Les résultats vivent en mémoire, les 5 derniers audits seulement, et disparaissent au
-  redémarrage. Exportez le CSV pour conserver un audit.
+- Les 5 derniers audits restent en mémoire pour le suivi en direct ; les autres sont relus
+  depuis le disque, ce qui n'autorise plus l'arrêt ni la reprise du flux, seulement la lecture
+  et l'export.
+- Les lignes d'un audit ne sont écrites qu'à sa fin : un crawl coupé par l'arrêt du serveur ne
+  laisse que son en-tête.
 - Le corps d'une page est lu jusqu'à 8 Mo, au-delà il est tronqué (`body-truncated`) et les
   liens situées après ne sont pas relevés.
 
@@ -167,6 +206,7 @@ instance avec `BLOCK_PRIVATE_IPS=0` sur un réseau non maîtrisé.
 bun test
 ```
 
-17 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+28 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
 absence de boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
-pages, `robots.txt`, garde SSRF, normalisation d'URL et forme des deux CSV.
+pages, `robots.txt`, garde SSRF, normalisation d'URL, forme des deux CSV, aller-retour d'un
+audit par le disque et refus des identifiants qui sortiraient du dossier de données.

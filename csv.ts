@@ -16,19 +16,22 @@ export function row(fields: unknown[]): string {
 /**
  * Builds a downloadable CSV Response from a row generator.
  * Rows are encoded and flushed in batches so a 100k-row export never
- * materialises in memory.
+ * materialises in memory. The generator may be synchronous (live crawl) or
+ * asynchronous (audit replayed from disk).
  */
 export function csvResponse(
   filename: string,
   header: string[],
-  rows: () => Iterable<unknown[]>,
+  rows: () => Iterable<unknown[]> | AsyncIterable<unknown[]>,
 ): Response {
   const enc = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
-    start(c) {
+    // `async` pour accepter aussi bien les lignes en mémoire que celles relues
+    // depuis le disque : dans les deux cas rien n'est materialisé en entier.
+    async start(c) {
       c.enqueue(enc.encode(BOM + row(header)));
       let buf = "";
-      for (const r of rows()) {
+      for await (const r of rows()) {
         buf += row(r);
         if (buf.length > 64 * 1024) {
           c.enqueue(enc.encode(buf));

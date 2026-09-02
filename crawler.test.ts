@@ -2,6 +2,9 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { compileExcludes, Crawl, isBroken, isPrivateHost, normalize, type Row } from "./crawler";
 import { brokenRows } from "./report";
 import { Robots } from "./robots";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** Fixture site: a deliberately broken little website. */
 const site: Record<string, { body?: string; status?: number; type?: string; loc?: string }> = {
@@ -197,7 +200,7 @@ test("checkAssets et checkExternal désactivés réduisent le périmètre", asyn
 
 test("broken.csv produit une ligne par couple (cible, referer)", async () => {
   const c = await crawl();
-  const rows = [...brokenRows(c.rows.values())];
+  const rows = await Array.fromAsync(brokenRows(c.rows.values()));
   const miss = rows.filter((r) => r[0] === origin + "/missing");
   expect(miss.length).toBe(2);
   expect(miss.map((r) => r[3]).sort()).toEqual([origin + "/", origin + "/a"]);
@@ -288,4 +291,60 @@ test("robots.txt : un groupe ciblant un autre agent est ignoré", () => {
   r.parse(`User-agent: BadBot\nDisallow: /\n\nUser-agent: *\nDisallow: /tmp`, "crowler/1.0");
   expect(r.allows("/")).toBe(true);
   expect(r.allows("/tmp/x")).toBe(false);
+});
+
+/* ---- persistance ---- */
+
+test("un audit enregistré se relit à l'identique et s'exporte depuis le disque", async () => {
+  const dir = join(tmpdir(), "crowler-test-" + Math.random().toString(36).slice(2));
+  process.env.DATA_DIR = dir;
+  try {
+    const store = await import("./store?" + Math.random()) as typeof import("./store");
+    const c = await crawl();
+
+    await store.begin(c);
+    let heads = await store.list();
+    expect(heads.length).toBe(1);
+    expect(heads[0]!.host).toBe(new URL(origin).hostname);
+
+    await store.save(c);
+    heads = await store.list();
+    expect(heads[0]!.finishedAt).toBeGreaterThan(0);
+    expect(heads[0]!.broken).toBe([...c.rows.values()].filter(isBroken).length);
+    expect(heads[0]!.stats!.total).toBe(c.rows.size);
+
+    // Les lignes relues portent la même information que celles en mémoire.
+    const back = await Array.fromAsync(store.rows(c.id));
+    expect(back.length).toBe(c.rows.size);
+    const missing = back.find((r) => r.url === origin + "/missing")!;
+    expect(missing.status).toBe(404);
+    expect(missing.refs.map((f) => f.from).sort()).toEqual([origin + "/", origin + "/a"]);
+
+    // Donc l'export d'un audit passé est identique à celui de l'audit en cours.
+    const fromDisk = await Array.fromAsync(brokenRows(store.rows(c.id)));
+    const fromMemory = await Array.fromAsync(brokenRows(c.rows.values()));
+    expect(fromDisk).toEqual(fromMemory);
+
+    expect(await store.remove(c.id)).toBe(true);
+    expect(await store.list()).toEqual([]);
+  } finally {
+    delete process.env.DATA_DIR;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("un identifiant hors format ne sort pas du dossier de données", async () => {
+  const dir = join(tmpdir(), "crowler-test-" + Math.random().toString(36).slice(2));
+  process.env.DATA_DIR = dir;
+  try {
+    const store = await import("./store?" + Math.random()) as typeof import("./store");
+    for (const bad of ["../etc", "a/b", ".", "", "a".repeat(64)]) {
+      expect(await store.read(bad)).toBe(null);
+      expect(await store.remove(bad)).toBe(false);
+      expect(await Array.fromAsync(store.rows(bad))).toEqual([]);
+    }
+  } finally {
+    delete process.env.DATA_DIR;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

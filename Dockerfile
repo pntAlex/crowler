@@ -9,7 +9,13 @@ COPY public ./public
 # become a scanner for the network it runs in.
 ENV BLOCK_PRIVATE_IPS=1 \
     PORT=3000 \
+    DATA_DIR=/app/data \
     NODE_ENV=production
+
+# L'historique des audits vit ici : montez un volume nommé dessus pour qu'il
+# survive à la recreation du conteneur.
+RUN mkdir -p /app/data && chown bun:bun /app/data
+VOLUME /app/data
 
 USER bun
 EXPOSE 3000
