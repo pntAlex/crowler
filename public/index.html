@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>crowler — audit de liens</title>
+<style>
+:root{
+  --paper:#eef1f6; --card:#fff; --line:#d5dce7; --line-soft:#e6ebf2;
+  --ink:#0d1526; --ink-2:#4a5772; --ink-3:#7a8699;
+  --accent:#2f2ae8;
+  --s2:#0d7f68; --s3:#b5780c; --s4:#d6362a; --s5:#9c2494; --sx:#5c6a80;
+  --s2-bg:#0d7f6816; --s3-bg:#b5780c16; --s4-bg:#d6362a16; --s5-bg:#9c249416; --sx-bg:#5c6a8016;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"Cascadia Mono","Roboto Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --r:7px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#0d1017; --card:#151a24; --line:#2a3240; --line-soft:#1f2734;
+    --ink:#e7ecf5; --ink-2:#9aa7bd; --ink-3:#6a7689;
+    --accent:#7d79ff;
+    --s2:#2fc9a8; --s3:#e0a532; --s4:#ff6a5c; --s5:#d968d0; --sx:#8b98ad;
+    --s2-bg:#2fc9a820; --s3-bg:#e0a53220; --s4-bg:#ff6a5c20; --s5-bg:#d968d020; --sx-bg:#8b98ad20;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--paper); color:var(--ink);
+  font:13px/1.5 var(--mono);
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 72px}
+
+/* ---- header ---- */
+.top{display:flex;align-items:center;gap:12px;padding:18px 0 16px}
+.mark{display:flex;align-items:baseline;gap:9px;font-weight:600;letter-spacing:-.01em;font-size:15px}
+.mark b{font-weight:600}
+.mark i{
+  font-style:normal;width:8px;height:14px;background:var(--accent);
+  display:inline-block;translate:0 1px;border-radius:1px;
+}
+.mark span{color:var(--ink-3);font-weight:400;font-size:12px;letter-spacing:.02em}
+
+/* ---- launch ---- */
+.launch{display:flex;gap:8px;align-items:stretch}
+input,select,button,textarea{font:inherit;font-variant-numeric:tabular-nums;color:inherit}
+#url{
+  flex:1;min-width:0;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r);padding:0 14px;height:44px;font-size:14px;letter-spacing:-.01em;
+}
+#url::placeholder{color:var(--ink-3)}
+#url:focus-visible,button:focus-visible,select:focus-visible,summary:focus-visible,
+.chip:focus-visible,.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{border:1px solid transparent;border-radius:var(--r);cursor:pointer;background:none}
+.go{background:var(--ink);color:var(--paper);padding:0 22px;height:44px;font-weight:600;letter-spacing:.01em}
+.go:hover{opacity:.85}
+.go[disabled]{opacity:.4;cursor:default}
+.halt{
+  background:var(--s4);color:#fff;padding:0 22px;height:44px;font-weight:600;letter-spacing:.01em;
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;
+}
+.halt.pending{opacity:.8;cursor:progress}
+.halt.pending::before{
+  content:"";width:12px;height:12px;flex:none;border-radius:50%;
+  border:2px solid rgba(255,255,255,.4);border-top-color:#fff;
+  animation:spin .65s linear infinite;
+}
+@keyframes spin{to{rotate:360deg}}
+.halt:hover{opacity:.88}
+.halt[hidden],.go[hidden]{display:none}
+form.busy #url{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 14%,transparent)}
+.ghost{background:var(--card);border-color:var(--line);padding:0 14px;height:44px;color:var(--ink-2)}
+.ghost:hover:not([disabled]){color:var(--ink);border-color:var(--ink-3)}
+.ghost[disabled]{opacity:.4;cursor:default}
+
+/* ---- settings ---- */
+details.cfg{margin-top:8px}
+details.cfg summary{
+  list-style:none;cursor:pointer;color:var(--ink-3);font-size:11.5px;
+  letter-spacing:.06em;text-transform:uppercase;padding:6px 0;display:inline-flex;gap:6px;align-items:center;
+}
+details.cfg summary::-webkit-details-marker{display:none}
+details.cfg summary::after{content:"+";font-size:14px;translate:0 -1px}
+details.cfg[open] summary::after{content:"–"}
+.cfg-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:10px 16px;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:4px;
+}
+.f{display:flex;flex-direction:column;gap:5px;min-width:0}
+.f > span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.f input[type=number]{background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:100%}
+.f textarea{
+  background:transparent;border:1px solid var(--line);border-radius:5px;padding:7px 9px;
+  width:100%;resize:vertical;min-height:62px;line-height:1.45;font-size:12.5px;
+}
+.f textarea::placeholder{color:var(--ink-3)}
+.f textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.f em{font-style:normal;color:var(--ink-3);text-transform:none;letter-spacing:0;font-size:11px}
+.sw{display:flex;align-items:center;gap:8px;cursor:pointer;padding:5px 0;font-size:12.5px;color:var(--ink-2)}
+.sw input{appearance:none;margin:0;width:30px;height:17px;border-radius:9px;background:var(--line);position:relative;cursor:pointer;flex:none;transition:background .15s}
+.sw input::after{content:"";position:absolute;inset:2px auto 2px 2px;width:13px;border-radius:50%;background:var(--card);transition:translate .15s}
+.sw input:checked{background:var(--accent)}
+.sw input:checked::after{translate:13px 0}
+.sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sw:hover{color:var(--ink)}
+
+/* ---- SIGNATURE: status spectrum ---- */
+.meter{margin:22px 0 0}
+.bar{
+  display:flex;height:14px;border-radius:3px;overflow:hidden;
+  background:var(--line-soft);box-shadow:inset 0 0 0 1px var(--line);
+}
+/* While crawling, the not-yet-explored remainder of the track is hatched and
+   travelling: the signature element carries the running state itself. */
+.bar.working{
+  background-image:repeating-linear-gradient(45deg,
+    var(--line-soft) 0 6px, var(--line) 6px 12px);
+  animation:hatch .55s linear infinite;
+}
+@keyframes hatch{to{background-position:-16.97px 0}}
+.bar i{display:block;width:0;transition:width .16s linear}
+.bar i[data-k="2"]{background:var(--s2)} .bar i[data-k="3"]{background:var(--s3)}
+.bar i[data-k="4"]{background:var(--s4)} .bar i[data-k="5"]{background:var(--s5)}
+.bar i[data-k="x"]{background:var(--sx)}
+.legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px;align-items:center}
+.chip{
+  display:inline-flex;align-items:baseline;gap:7px;padding:5px 10px;border-radius:5px;
+  border:1px solid var(--line);background:var(--card);cursor:pointer;font-size:11.5px;
+  letter-spacing:.04em;color:var(--ink-2);
+}
+.chip:hover{border-color:var(--ink-3)}
+.chip b{font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--ink)}
+.chip::before{content:"";width:7px;height:7px;border-radius:2px;background:currentColor;translate:0 -1px}
+.chip[data-k="2"]{color:var(--s2)} .chip[data-k="3"]{color:var(--s3)}
+.chip[data-k="4"]{color:var(--s4)} .chip[data-k="5"]{color:var(--s5)}
+.chip[data-k="x"]{color:var(--sx)}
+.chip[aria-pressed=true]{border-color:currentColor;box-shadow:inset 0 0 0 1px currentColor}
+.chip[data-empty=true]{opacity:.4}
+
+/* ---- live readout ---- */
+.readout{
+  display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-top:12px;
+  padding:11px 15px;border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:var(--r);background:var(--card);
+}
+.readout[hidden]{display:none}
+.readout[data-state=done]{border-left-color:var(--s2)}
+.readout[data-state=done] .cursor{animation:none;background:var(--s2)}
+.cursor{
+  width:8px;height:14px;border-radius:1px;background:var(--accent);flex:none;
+  translate:0 2px;animation:blink 1s steps(2,start) infinite;
+}
+@keyframes blink{50%{opacity:.2}}
+.rd-tag{
+  font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
+  margin-right:3px;
+}
+.rd-big{font-size:21px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.rd-unit{font-size:11.5px;color:var(--ink-3);letter-spacing:.03em;margin-right:6px}
+.rd-pair{display:inline-flex;align-items:baseline;gap:5px;color:var(--ink-2);font-size:12px}
+.rd-pair b{font-weight:600;color:var(--ink);font-size:13.5px}
+.rd-rest{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:0 5px}
+.rd-pair + .rd-pair::before{content:"·";color:var(--ink-3);margin-right:5px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+/* ---- tabs + toolbar ---- */
+.rail{display:flex;gap:4px;align-items:center;margin:26px 0 0;flex-wrap:wrap}
+.tab{
+  padding:8px 13px;border-radius:var(--r) var(--r) 0 0;cursor:pointer;color:var(--ink-3);
+  font-size:12px;letter-spacing:.02em;border:1px solid transparent;border-bottom:none;
+}
+.tab[aria-selected=true]{background:var(--card);border-color:var(--line);color:var(--ink);font-weight:600}
+.tab span{color:var(--ink-3);font-weight:400}
+.tools{margin-left:auto;display:flex;gap:6px;align-items:center;padding-bottom:4px}
+#q{background:var(--card);border:1px solid var(--line);border-radius:5px;height:30px;padding:0 10px;width:190px;max-width:40vw}
+.mini{border:1px solid var(--line);background:var(--card);border-radius:5px;height:30px;padding:0 11px;font-size:11.5px;letter-spacing:.03em;color:var(--ink-2)}
+.mini:hover:not([disabled]){color:var(--ink);border-color:var(--ink-3)}
+.mini[disabled]{opacity:.4;cursor:default}
+
+/* ---- panel ---- */
+.panel{background:var(--card);border:1px solid var(--line);border-radius:0 var(--r) var(--r);min-height:200px}
+.note{padding:44px 24px;text-align:center;color:var(--ink-3);font-family:var(--sans);font-size:14px;line-height:1.6}
+.note b{display:block;color:var(--ink);font-weight:600;margin-bottom:5px;font-size:15px}
+.err{color:var(--s4)}
+
+/* ---- broken groups ---- */
+.grp{border-bottom:1px solid var(--line-soft)}
+.grp:last-child{border-bottom:none}
+.grp-h{display:flex;gap:14px;align-items:baseline;padding:13px 16px;width:100%;text-align:left;cursor:pointer;background:none}
+.grp-h:hover{background:var(--line-soft)}
+.code{
+  font-size:19px;font-weight:600;letter-spacing:-.02em;flex:none;width:52px;
+  font-variant-numeric:tabular-nums;
+}
+.code.k2{color:var(--s2)} .code.k3{color:var(--s3)} .code.k4{color:var(--s4)}
+.code.k5{color:var(--s5)} .code.kx{color:var(--sx);font-size:12px;font-weight:500;letter-spacing:.02em}
+.grp-u{flex:1;min-width:0;overflow-wrap:anywhere;letter-spacing:-.01em}
+.grp-u em{font-style:normal;display:block;color:var(--ink-3);font-size:11.5px;margin-top:3px;letter-spacing:.02em}
+.grp-n{flex:none;color:var(--ink-3);font-size:11.5px;letter-spacing:.03em;white-space:nowrap}
+.refs{margin:0;padding:0 16px 14px 82px;list-style:none;display:grid;gap:7px}
+.refs li{display:flex;gap:10px;align-items:baseline;min-width:0}
+.refs li::before{content:"↳";color:var(--ink-3);flex:none}
+.refs a{color:var(--ink-2);text-decoration:none;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
+.refs a:hover{color:var(--accent);border-color:var(--accent)}
+.refs q{color:var(--ink-3);font-family:var(--sans);font-size:12px;quotes:"«\00a0" "\00a0»"}
+.more{padding:9px 16px 15px 82px;color:var(--ink-3);font-size:11.5px}
+
+/* ---- table ---- */
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th{
+  text-align:left;font-weight:500;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-3);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;
+  position:sticky;top:0;background:var(--card);cursor:pointer;user-select:none;
+}
+th:hover{color:var(--ink)}
+th[aria-sort]::after{content:"↑";margin-left:5px;color:var(--accent)}
+th[aria-sort=descending]::after{content:"↓"}
+td{padding:8px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+tbody tr:hover{background:var(--line-soft)}
+td.u{max-width:520px;overflow-wrap:anywhere;letter-spacing:-.01em}
+td.n{text-align:right;color:var(--ink-2);white-space:nowrap}
+td.dim{color:var(--ink-3)}
+.pill{display:inline-block;padding:2px 7px;border-radius:4px;font-weight:600;font-size:11.5px}
+.pill.k2{color:var(--s2);background:var(--s2-bg)} .pill.k3{color:var(--s3);background:var(--s3-bg)}
+.pill.k4{color:var(--s4);background:var(--s4-bg)} .pill.k5{color:var(--s5);background:var(--s5-bg)}
+.pill.kx{color:var(--sx);background:var(--sx-bg)}
+.kind{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+@media (max-width:640px){
+  .launch{flex-wrap:wrap}
+  .go,.halt{flex:1}
+  .tools{margin-left:0;width:100%;flex-wrap:wrap;padding:8px 0 0}
+  #q{flex:1 1 100%;max-width:none;width:auto}
+  .mini{flex:1 1 0;height:auto;min-height:34px;padding:7px 9px;line-height:1.25;white-space:normal}
+  .grp-h{flex-wrap:wrap;row-gap:4px}
+  .grp-u{flex:1 1 100%;order:2}
+  .grp-n{order:1}
+  .refs,.more{padding-left:16px}
+  .refs li{flex-wrap:wrap;row-gap:2px}
+  td.u{max-width:none}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="mark"><i></i><b>crowler</b><span>audit de liens</span></div>
+  </header>
+
+  <form class="launch" id="form">
+    <input id="url" type="url" placeholder="https://exemple.fr" required autocomplete="url" spellcheck="false">
+    <button class="go" id="go" type="submit">Auditer</button>
+    <button class="halt" id="halt" type="button" hidden>Arrêter</button>
+  </form>
+
+  <details class="cfg" open>
+    <summary>Réglages</summary>
+    <div class="cfg-grid">
+      <label class="f"><span>Parallèle</span><input type="number" id="concurrency" value="8" min="1" max="64"></label>
+      <label class="f"><span>Délai (ms)</span><input type="number" id="delayMs" value="0" min="0" max="10000" step="50"></label>
+      <label class="f"><span>Profondeur max</span><input type="number" id="maxDepth" value="0" min="0" max="50"></label>
+      <label class="f"><span>Pages max</span><input type="number" id="maxPages" value="10000" min="1" max="200000" step="500"></label>
+      <label class="f"><span>Timeout (ms)</span><input type="number" id="timeoutMs" value="15000" min="1000" max="120000" step="1000"></label>
+      <div class="f" style="grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 16px">
+        <label class="sw"><input type="checkbox" id="checkExternal" checked>Vérifier les liens externes</label>
+        <label class="sw"><input type="checkbox" id="checkAssets" checked>Vérifier images, CSS et scripts</label>
+        <label class="sw"><input type="checkbox" id="respectRobots" checked>Respecter robots.txt</label>
+        <label class="sw"><input type="checkbox" id="includeSubdomains">Explorer les sous-domaines</label>
+        <label class="sw"><input type="checkbox" id="followNofollow">Suivre les liens nofollow</label>
+        <label class="sw"><input type="checkbox" id="ignoreQuery">Ignorer les query strings</label>
+        <label class="sw"><input type="checkbox" id="notify" checked>Notifier sur le bureau à la fin <span id="notify-hint" style="color:var(--ink-3)"></span></label>
+      </div>
+      <label class="f" style="grid-column:1/-1">
+        <span>Exclure du crawl <em>— une expression régulière par ligne, insensible à la casse, testée sur l’URL entière</em></span>
+        <textarea id="exclude" rows="3" spellcheck="false" autocapitalize="off"
+          placeholder="/wp-admin/&#10;\.pdf$&#10;[?&amp;]utm_"></textarea>
+      </label>
+    </div>
+  </details>
+
+  <section class="meter" aria-label="Répartition des statuts">
+    <div class="bar" id="bar">
+      <i data-k="2"></i><i data-k="3"></i><i data-k="4"></i><i data-k="5"></i><i data-k="x"></i>
+    </div>
+    <div class="legend" id="legend">
+      <button class="chip" data-k="2" aria-pressed="false"><b>0</b> 2xx</button>
+      <button class="chip" data-k="3" aria-pressed="false"><b>0</b> 3xx</button>
+      <button class="chip" data-k="4" aria-pressed="false"><b>0</b> 4xx</button>
+      <button class="chip" data-k="5" aria-pressed="false"><b>0</b> 5xx</button>
+      <button class="chip" data-k="x" aria-pressed="false"><b>0</b> sans réponse</button>
+    </div>
+
+    <div class="readout" id="readout" hidden>
+      <span class="cursor" aria-hidden="true"></span>
+      <span class="rd-tag" id="rd-tag">exploration</span>
+      <span class="rd-big" id="rd-done">0</span><span class="rd-unit" id="rd-unit">URLs</span>
+      <span class="rd-rest" id="rd-rest"></span>
+    </div>
+    <p class="sr" role="status" id="sr"></p>
+  </section>
+
+  <nav class="rail" role="tablist">
+    <button class="tab" id="tab-broken" role="tab" aria-selected="true" aria-controls="panel">Liens cassés <span id="n-broken">0</span></button>
+    <button class="tab" id="tab-all" role="tab" aria-selected="false" aria-controls="panel">Toutes les URLs <span id="n-all">0</span></button>
+    <div class="tools">
+      <input id="q" type="search" placeholder="filtrer…" spellcheck="false" aria-label="Filtrer les URLs">
+      <button class="mini" id="dl-broken" disabled>Exporter les liens cassés</button>
+      <button class="mini" id="dl-pages" disabled>Exporter les pages</button>
+    </div>
+  </nav>
+
+  <div class="panel" id="panel" role="tabpanel">
+    <p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NUM = new Intl.NumberFormat("fr-FR");
+const BOOLS = ["checkExternal","checkAssets","respectRobots","includeSubdomains","followNofollow","ignoreQuery"];
+const NUMS = ["concurrency","delayMs","maxDepth","maxPages","timeoutMs"];
+const MAX_TABLE_ROWS = 500;
+const TITLE = document.title;
+
+const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?}
+let stats = null, id = null, es = null, target = "";
+let view = "broken", filter = null, query = "", sortKey = "s", sortDir = -1;
+let painting = false, pendingPaint = false, halting = false;
+
+/* ---- status classing ---- */
+const klass = (r) => {
+  if (r.s >= 500) return "5";
+  if (r.s >= 400) return "4";
+  if (r.s >= 300) return "3";
+  if (r.s >= 200) return "2";
+  return "x";
+};
+const broken = (r) => r.s >= 400 || (r.s === 0 && !!r.e && r.e !== "aborted"); // ni en file, ni annulée
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const linkable = (u) => /^https?:\/\//i.test(u);
+const short = (u) => u.replace(/^https?:\/\//, "").replace(/\/$/, "") || u;
+const dur = (ms) => (ms < 950 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+const bytes = (n) => !n ? "" : n < 1024 ? n + " o" : n < 1048576 ? (n/1024).toFixed(0) + " ko" : (n/1048576).toFixed(1) + " Mo";
+const label = (r) =>
+  r.s ? r.s
+  : !r.e ? "en file"
+  : r.e === "robots" ? "robots"
+  : r.e === "private-host" ? "privé"
+  : r.e === "bad-url" ? "url"
+  : r.e === "aborted" ? "arrêté"
+  : "échec";
+
+/* ---- launch ---- */
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (es) return; // a crawl is already running
+  const opts = {};
+  for (const k of BOOLS) opts[k] = $(k).checked;
+  for (const k of NUMS) opts[k] = Number($(k).value);
+  opts.exclude = $("exclude").value.split("\n").map((t) => t.trim()).filter(Boolean);
+  askNotify();
+
+  reset();
+  busy(true);
+  try {
+    const res = await fetch("/api/crawl", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: $("url").value.trim(), opts }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "démarrage impossible");
+    id = data.id;
+    target = data.start;
+    $("dl-broken").disabled = $("dl-pages").disabled = false;
+    connect();
+  } catch (err) {
+    busy(false);
+    $("readout").hidden = true;
+    $("panel").innerHTML = '<p class="note"><b class="err">Audit non démarré</b>' + esc(err.message) + "</p>";
+  }
+});
+
+/** Swaps the launch row into its running state. */
+function busy(on) {
+  if (on) {
+    halting = false;
+    $("halt").disabled = false;
+    $("halt").classList.remove("pending");
+    $("halt").textContent = "Arrêter";
+  }
+  $("form").classList.toggle("busy", on);
+  $("go").hidden = on;
+  $("halt").hidden = !on;
+  $("bar").classList.toggle("working", on);
+}
+
+/* Stopping is not instant: in-flight requests must unwind, so the button owns
+   the wait instead of looking inert. */
+$("halt").addEventListener("click", () => {
+  if (!id || halting) return;
+  halting = true;
+  $("halt").disabled = true;
+  $("halt").classList.add("pending");
+  $("halt").textContent = "Arrêt…";
+  $("rd-tag").textContent = "arrêt en cours";
+  fetch(`/api/crawl/${id}/stop`, { method: "POST" }).catch(() => {});
+});
+$("dl-pages").addEventListener("click", () => id && (location.href = `/api/crawl/${id}/pages.csv`));
+$("dl-broken").addEventListener("click", () => id && (location.href = `/api/crawl/${id}/broken.csv`));
+
+function reset() {
+  rows.clear(); stats = null; filter = null;
+  if (es) { es.close(); es = null; }
+  $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+  $("readout").hidden = false;
+  $("readout").dataset.state = "run";
+  $("rd-tag").textContent = "démarrage";
+  $("rd-done").textContent = "0";
+  $("rd-unit").textContent = "URLs";
+  $("rd-rest").innerHTML = "";
+  $("panel").innerHTML = '<p class="note">Résolution de robots.txt et de la page de départ…</p>';
+  paint();
+}
+
+function connect() {
+  es = new EventSource(`/api/crawl/${id}/events`);
+  es.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.rows) for (const r of m.rows) rows.set(r.u, r);
+    if (m.stats) stats = m.stats;
+    if (m.type === "done") {
+      es.close(); es = null;
+      busy(false);
+      finish(m);
+    }
+    paint();
+  };
+  es.addEventListener("gone", () => { es.close(); es = null; });
+  es.onerror = () => { if (es && es.readyState === 2) { es = null; busy(false); } };
+}
+
+/* ---- painting ----
+   Throttled with a timer, not requestAnimationFrame: rAF never fires in a
+   background tab, so a crawl left running would show nothing on return. The
+   trailing flag makes sure the last batch is always drawn. */
+function paint() {
+  if (painting) { pendingPaint = true; return; }
+  painting = true;
+  setTimeout(() => {
+    painting = false;
+    render();
+    if (pendingPaint) { pendingPaint = false; paint(); }
+  }, 100);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
+
+function counts() {
+  const c = { "2":0, "3":0, "4":0, "5":0, x:0 };
+  for (const r of rows.values()) if (r.s || r.e) c[klass(r)]++;
+  return c;
+}
+
+const pair = (n, k) => `<span class="rd-pair"><b>${n}</b>${k ? " " + k : ""}</span>`;
+
+function render() {
+  const c = counts();
+  const settled = c["2"] + c["3"] + c["4"] + c["5"] + c.x;
+  const pending = stats ? stats.queued + stats.inflight : 0;
+  // The bar doubles as progress: filled = settled, hatched tail = still queued.
+  const frac = settled + pending ? settled / (settled + pending) : 0;
+  for (const seg of $("bar").children) {
+    seg.style.width = (settled ? (c[seg.dataset.k] / settled) * frac * 100 : 0) + "%";
+  }
+  for (const chip of $("legend").querySelectorAll(".chip")) {
+    chip.querySelector("b").textContent = NUM.format(c[chip.dataset.k]);
+    chip.dataset.empty = c[chip.dataset.k] === 0;
+  }
+
+  if (stats && stats.live) {
+    const rate = stats.elapsed > 500 ? Math.round(stats.done / (stats.elapsed / 1000)) : 0;
+    $("rd-tag").textContent = "exploration";
+    $("rd-done").textContent = NUM.format(stats.done);
+    $("rd-unit").textContent = "explorées";
+    $("rd-rest").innerHTML =
+      pair(NUM.format(stats.queued), "en file") + pair(stats.inflight, "en cours") + pair(rate, "URLs/s") +
+      (stats.excluded ? pair(NUM.format(stats.excluded), stats.excluded === 1 ? "lien exclu" : "liens exclus") : "");
+    if (halting) $("rd-tag").textContent = "arrêt en cours";
+    document.title = `${NUM.format(stats.done)} URLs · exploration — crowler`;
+  }
+
+  const all = [...rows.values()];
+  const bad = all.filter(broken);
+  $("n-broken").textContent = NUM.format(bad.length);
+  $("n-all").textContent = NUM.format(all.length);
+
+  const list = keep(view === "broken" ? bad : all);
+  $("panel").innerHTML = view === "broken" ? brokenView(list, bad.length) : tableView(list, all.length);
+}
+
+function keep(list) {
+  const q = query.toLowerCase();
+  return list.filter((r) => {
+    if (filter && klass(r) !== filter) return false;
+    if (q && !r.u.toLowerCase().includes(q) && !(r.f || []).some((f) => f.from.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function brokenView(list, total) {
+  if (!list.length) {
+    return total
+      ? '<p class="note"><b>Aucun résultat</b>Ce filtre ne correspond à aucun lien cassé.</p>'
+      : (stats && !stats.live
+          ? '<p class="note"><b>Aucun lien cassé</b>Toutes les URLs atteintes ont répondu correctement.</p>'
+          : '<p class="note">Exploration en cours…</p>');
+  }
+  list.sort((a, b) => b.n - a.n || a.s - b.s);
+  return list.map((r) => {
+    const k = klass(r);
+    const refs = r.f || [];
+    const head =
+      `<button class="grp-h" onclick="this.nextElementSibling&&this.parentElement.classList.toggle('shut')">` +
+        `<span class="code k${k}">${esc(label(r))}</span>` +
+        `<span class="grp-u">${esc(short(r.u))}` +
+          (r.e && r.s ? `<em>${esc(r.e)}</em>` : r.e ? `<em>${esc(detail(r.e))}</em>` : "") +
+        `</span>` +
+        `<span class="grp-n">${r.n ? NUM.format(r.n) + (r.n > 1 ? " liens entrants" : " lien entrant") : "point de départ"}</span>` +
+      `</button>`;
+    const body = refs.length
+      ? `<ul class="refs">` + refs.map((f) =>
+          `<li>${linkable(f.from) ? `<a href="${esc(f.from)}" target="_blank" rel="noopener noreferrer nofollow">${esc(short(f.from))}</a>` : esc(f.from)}` +
+          (f.text ? ` <q>${esc(f.text)}</q>` : "") + `</li>`).join("")
+        + (r.n > refs.length ? `<li style="color:var(--ink-3)">et ${NUM.format(r.n - refs.length)} autres pages (voir liens-casses.csv)</li>` : "")
+        + `</ul>`
+      : "";
+    return `<div class="grp">${head}${body}</div>`;
+  }).join("");
+}
+
+const detail = (e) => ({
+  robots: "bloqué par robots.txt", "private-host": "cible sur réseau privé, ignorée",
+  "bad-url": "href malformé", timeout: "délai dépassé", aborted: "requête interrompue",
+  "no-location": "redirection sans en-tête Location", "bad-location": "en-tête Location invalide",
+}[e] || e);
+
+const COLS = [
+  ["s", "statut"], ["u", "url"], ["k", "type"], ["d", "prof."],
+  ["t", "content-type"], ["m", "ms"], ["b", "taille"], ["n", "liens entrants"], ["r", "redirige vers"],
+];
+
+function tableView(list, total) {
+  if (!list.length) {
+    return total
+      ? '<p class="note"><b>Aucun résultat</b>Ce filtre ne correspond à aucune URL.</p>'
+      : '<p class="note">Exploration en cours…</p>';
+  }
+  list.sort((a, b) => {
+    const x = a[sortKey] ?? "", y = b[sortKey] ?? "";
+    return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * sortDir;
+  });
+  const shown = list.slice(0, MAX_TABLE_ROWS);
+  const head = COLS.map(([k, l]) =>
+    `<th onclick="sortBy('${k}')"${k === sortKey ? ` aria-sort="${sortDir > 0 ? "ascending" : "descending"}"` : ""}>${l}</th>`).join("");
+  const body = shown.map((r) => {
+    const k = klass(r);
+    return `<tr>` +
+      `<td><span class="pill k${k}">${esc(label(r))}</span></td>` +
+      `<td class="u">${linkable(r.u) ? `<a href="${esc(r.u)}" target="_blank" rel="noopener noreferrer nofollow" style="color:inherit;text-decoration:none">${esc(short(r.u))}</a>` : esc(r.u)}${r.e ? ` <span class="dim">${esc(detail(r.e))}</span>` : ""}</td>` +
+      `<td class="kind">${esc(r.k)}</td>` +
+      `<td class="n">${r.d}</td>` +
+      `<td class="dim">${esc(r.t)}</td>` +
+      `<td class="n">${r.m}</td>` +
+      `<td class="n">${bytes(r.b)}</td>` +
+      `<td class="n">${r.n ? NUM.format(r.n) : ""}</td>` +
+      `<td class="u dim">${r.r ? esc(short(r.r)) : ""}</td>` +
+    `</tr>`;
+  }).join("");
+  const rest = list.length - shown.length;
+  return `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
+    (rest > 0 ? `<p class="more">${NUM.format(rest)} URLs supplémentaires non affichées — affinez le filtre ou exportez le CSV.</p>` : "");
+}
+
+window.sortBy = (k) => { sortDir = k === sortKey ? -sortDir : (k === "u" || k === "t" ? 1 : -1); sortKey = k; render(); };
+
+/* ---- end of crawl ---- */
+function finish(m) {
+  const bad = [...rows.values()].filter(broken).length;
+  const secs = dur(m.stats.elapsed);
+  $("readout").dataset.state = "done";
+  $("rd-tag").textContent = m.reason;
+  $("rd-done").textContent = NUM.format(m.stats.done);
+  $("rd-unit").textContent = "URLs explorées";
+  $("rd-rest").innerHTML =
+    pair(NUM.format(bad), bad === 1 ? "lien cassé" : "liens cassés") +
+    (m.stats.excluded ? pair(NUM.format(m.stats.excluded), m.stats.excluded === 1 ? "lien exclu" : "liens exclus") : "") +
+    pair(secs, "");
+  document.title = bad ? `${NUM.format(bad)} liens cassés — crowler` : TITLE;
+
+  const msg = bad
+    ? `${NUM.format(m.stats.done)} URLs explorées, ${NUM.format(bad)} ${bad === 1 ? "lien cassé" : "liens cassés"} en ${secs}.`
+    : `${NUM.format(m.stats.done)} URLs explorées, aucun lien cassé, en ${secs}.`;
+  $("sr").textContent = "Audit terminé. " + msg;
+  notifyDone(msg);
+}
+
+/* Notification API needs a secure context (localhost counts) and a user gesture
+   for the permission prompt, hence the request on submit. */
+function askNotify() {
+  if ($("notify").checked && "Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().then(notifyHint);
+  } else notifyHint();
+}
+
+function notifyHint() {
+  const box = $("notify"), hint = $("notify-hint");
+  if (!("Notification" in window)) {
+    box.checked = false; box.disabled = true;
+    hint.textContent = "— indisponible sans HTTPS";
+  } else if (Notification.permission === "denied") {
+    box.checked = false;
+    hint.textContent = "— refusé par le navigateur";
+  } else {
+    hint.textContent = "";
+  }
+}
+
+function notifyDone(msg) {
+  if (!$("notify").checked || !("Notification" in window) || Notification.permission !== "granted") return;
+  let name = target;
+  try { name = new URL(target).hostname; } catch { /* keep the raw string */ }
+  const n = new Notification(`Audit terminé — ${name}`, { body: msg, tag: "crowler-" + id });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
+/* ---- controls ---- */
+$("legend").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  const k = chip.dataset.k;
+  filter = filter === k ? null : k;
+  for (const c of $("legend").querySelectorAll(".chip")) c.setAttribute("aria-pressed", String(c.dataset.k === filter));
+  render();
+});
+for (const [btn, v] of [[$("tab-broken"), "broken"], [$("tab-all"), "all"]]) {
+  btn.addEventListener("click", () => {
+    view = v;
+    $("tab-broken").setAttribute("aria-selected", String(v === "broken"));
+    $("tab-all").setAttribute("aria-selected", String(v === "all"));
+    render();
+  });
+}
+let qt;
+$("q").addEventListener("input", (e) => { clearTimeout(qt); qt = setTimeout(() => { query = e.target.value.trim(); render(); }, 140); });
+notifyHint();
+$("url").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("form").requestSubmit(); }
+});
+$("url").focus();
+</script>
+</body>
+</html>

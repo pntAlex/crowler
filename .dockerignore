@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+*.log
+*.csv
+crowler
+crawler.test.ts
+fixture.ts
+README.md
+Dockerfile
+.dockerignore
