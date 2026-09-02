@@ -148,6 +148,29 @@ refusée, le réglage se décoche de lui-même et l'indique. L'API `Notification
 sécurisé : elle fonctionne sur `localhost` et en HTTPS, mais pas derrière une adresse IP en
 HTTP simple — le bandeau de progression reste dans tous les cas.
 
+## Synthèse
+
+À la fin du crawl, l'onglet « Synthèse » dresse cinq graphiques sur l'audit complet :
+
+| Graphique | Ce qu'il montre |
+|---|---|
+| Statuts par rôle | une barre empilée par rôle — `page`, `asset`, `external` — pour situer la casse |
+| URLs par profondeur | la forme du site en clics depuis le départ, la part cassée coiffant chaque colonne |
+| Temps de réponse | la distribution des latences par paliers, avec p50, p90, p99 et le volume transféré |
+| Domaines externes | les 8 domaines hors site les plus liés, et ce qui a échoué chez eux |
+| Pages à corriger | les 8 pages qui contiennent le plus de liens cassés — la file de travail |
+
+Les barres sont des `div` dimensionnés en pourcentage : pas de librairie de graphiques, donc
+rien à installer et rien de plus à charger. Le nombre de nœuds dessinés est borné — paliers
+fixes, classements tronqués à 8 — et le calcul, une passe unique sur les lignes, n'a lieu que
+lorsque l'onglet est celui affiché : un crawl en cours ne paie rien pour lui. Sur 60 000 URLs,
+la synthèse se calcule et se dessine en une cinquantaine de millisecondes.
+
+Deux réserves de lecture. Les paliers de latence comptent toutes les réponses reçues, 404
+comprises — un site qui répond vite ses erreurs paraît rapide. Et « Pages à corriger » compte
+les referers échantillonnés, donc plafonnés à 20 par lien cassé ; la carte le signale dès qu'un
+lien dépasse ce seuil, et `liens-casses.csv` porte le compte exact.
+
 ## Exports
 
 **`pages-<domaine>.csv`** — une ligne par URL :

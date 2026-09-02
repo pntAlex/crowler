@@ -253,6 +253,61 @@ details.cfg[open] summary::after{content:"–"}
 .refs q{color:var(--ink-3);font-family:var(--sans);font-size:12px;quotes:"«\00a0" "\00a0»"}
 .more{padding:9px 16px 15px 82px;color:var(--ink-3);font-size:11.5px}
 
+/* ---- synthesis charts ----
+   Barres en CSS plutôt qu'une librairie de graphiques : les formes utiles ici
+   sont des rectangles, et l'absence de dépendance est le principe du projet.
+   Le nombre de nœuds est borné — paliers fixes, listes tronquées à 8 — donc un
+   audit de 200 000 URLs se dessine aussi vite qu'un petit. */
+.synth{display:grid;grid-template-columns:repeat(auto-fit,minmax(302px,1fr));gap:13px;padding:15px}
+.card{
+  background:var(--paper);border:1px solid var(--line-soft);border-radius:var(--r);
+  padding:14px 16px 17px;min-width:0;
+}
+.card h3{margin:0;font-size:10.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.card .cap{margin:5px 0 0;font-family:var(--sans);font-size:11.5px;line-height:1.5;color:var(--ink-3)}
+.card .cap b{color:var(--ink-2);font-weight:600}
+
+/* une barre empilée par rôle */
+.krow{display:flex;align-items:center;gap:10px;margin-top:11px}
+.krow-l{flex:none;width:56px;font-size:11px;letter-spacing:.03em;color:var(--ink-2)}
+.krow-t{flex:1;min-width:0;display:flex;height:11px;border-radius:2px;overflow:hidden;background:var(--line)}
+.krow-t i{display:block}
+.krow-n{flex:none;width:52px;text-align:right;font-size:11.5px;color:var(--ink-2)}
+
+/* histogrammes en colonnes */
+.cols{display:flex;align-items:flex-end;margin-top:14px}
+.col{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.col-n{font-size:9.5px;color:var(--ink-3)}
+.col-t{height:94px;display:flex;align-items:flex-end;border-bottom:1px solid var(--line)}
+.col-t > span{
+  flex:1;margin:0 3px;display:flex;flex-direction:column;justify-content:flex-start;
+  border-radius:2px 2px 0 0;overflow:hidden;
+}
+.col-t i{display:block;background:var(--s4)}
+.col-l{font-size:10px;color:var(--ink-3)}
+/* Les fûts se touchent pour que la ligne de base soit continue : les deux
+   lignes de libellés reprennent l'air sur leur propre marge, et rognent
+   plutôt que de se rejoindre quand les colonnes sont serrées. */
+.col-n,.col-l{text-align:center;white-space:nowrap;overflow:hidden;text-overflow:clip;padding:0 2px}
+.col:hover .col-n{color:var(--ink)}
+
+/* classements */
+.tops{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:7px}
+.tops li{display:grid;grid-template-columns:minmax(0,1fr) 72px 42px;gap:9px;align-items:center}
+.tops .tl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;letter-spacing:-.01em;color:var(--ink-2)}
+.tops .tl a{color:inherit;text-decoration:none;border-bottom:1px solid var(--line)}
+.tops .tl a:hover{color:var(--accent);border-color:var(--accent)}
+.tops .tt{display:flex;height:9px;border-radius:2px;overflow:hidden;background:var(--line)}
+.tops .tt i{display:block;background:var(--accent)}
+.tops .tt i.b{background:var(--s4)}
+.tops b{font-size:11.5px;font-weight:600;text-align:right}
+.pcts{display:flex;flex-wrap:wrap;gap:0 15px;margin:13px 0 0;font-size:11px;letter-spacing:.03em;color:var(--ink-3)}
+.pcts b{color:var(--ink);font-weight:600;font-size:12.5px;margin-left:5px;letter-spacing:-.01em}
+@media (max-width:640px){
+  .tops li{grid-template-columns:minmax(0,1fr) 58px 40px}
+  .col-t{height:78px}
+}
+
 /* ---- table ---- */
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:12px}
@@ -368,6 +423,7 @@ td.dim{color:var(--ink-3)}
   <nav class="rail" role="tablist">
     <button class="tab" id="tab-broken" role="tab" aria-selected="true" aria-controls="panel">Liens cassés <span id="n-broken">0</span></button>
     <button class="tab" id="tab-all" role="tab" aria-selected="false" aria-controls="panel">Toutes les URLs <span id="n-all">0</span></button>
+    <button class="tab" id="tab-synth" role="tab" aria-selected="false" aria-controls="panel">Synthèse</button>
     <div class="tools">
       <input id="q" type="search" placeholder="filtrer…" spellcheck="false" aria-label="Filtrer les URLs">
       <button class="mini" id="dl-broken" disabled>Exporter les liens cassés</button>
@@ -737,6 +793,7 @@ function render() {
     if (sub) sub.textContent = `en cours · ${NUM.format(stats.done)} URLs`;
   }
 
+  if (view === "synth") { $("panel").innerHTML = synthView(); return; }
   const list = keep(view === "broken" ? bad : all);
   $("panel").innerHTML = view === "broken" ? brokenView(list, bad.length) : tableView(list, all.length);
 }
@@ -826,6 +883,182 @@ function tableView(list, total) {
 
 window.sortBy = (k) => { sortDir = k === sortKey ? -sortDir : (k === "u" || k === "t" ? 1 : -1); sortKey = k; render(); };
 
+/* ---- synthèse ----
+   Une seule passe sur les lignes, à la demande : l'onglet n'est calculé que
+   lorsqu'il est celui affiché, donc un crawl en cours ne paie rien pour lui.
+   Les barres sont des div dimensionnées en pourcentage — pas de librairie de
+   graphiques, et rien à dessiner qui dépende du nombre d'URLs. */
+const MS_EDGES = [100, 300, 600, 1000, 3000];
+const MS_LABELS = ["<100", "<300", "<600", "<1 s", "<3 s", "≥3 s"];
+const MS_TIPS = ["moins de 100 ms", "de 100 à 300 ms", "de 300 à 600 ms",
+                 "de 600 ms à 1 s", "de 1 à 3 s", "3 s et plus"];
+const MS_HUE = ["2", "2", "3", "3", "4", "4"];   // vert = rapide, rouge = lent
+const KINDS = [["page", "pages"], ["asset", "assets"], ["external", "externes"]];
+const DEPTH_COLS = 9;   // au-delà, la queue est regroupée en « 9+ »
+const TOP = 8;
+const COMPACT = new Intl.NumberFormat("fr-FR", { notation: "compact", maximumFractionDigits: 1 });
+
+function synth() {
+  const zero = () => ({ "2": 0, "3": 0, "4": 0, "5": 0, x: 0, n: 0 });
+  const kinds = { page: zero(), asset: zero(), external: zero() };
+  const depths = [];
+  const ms = new Array(MS_LABELS.length).fill(0);
+  const lat = [];
+  const hosts = new Map();
+  const pages = new Map();
+  let settled = 0, weight = 0, capped = false;
+
+  for (const r of rows.values()) {
+    if (!r.s && !r.e) continue;   // encore en file : rien à résumer
+    settled++;
+    const bad = broken(r);
+    const kind = kinds[r.k] || (kinds[r.k] = zero());
+    kind[klass(r)]++; kind.n++;
+
+    const d = depths[r.d] || (depths[r.d] = { n: 0, bad: 0 });
+    d.n++; if (bad) d.bad++;
+
+    weight += r.b || 0;
+    if (r.s > 0) {
+      lat.push(r.m);
+      let i = 0;
+      while (i < MS_EDGES.length && r.m >= MS_EDGES[i]) i++;
+      ms[i]++;
+    }
+    if (r.k === "external") {
+      let e = hosts.get(hostOf(r.u));
+      if (!e) hosts.set(hostOf(r.u), (e = { n: 0, bad: 0 }));
+      e.n++; if (bad) e.bad++;
+    }
+    if (bad && r.f) {
+      for (const f of r.f) pages.set(f.from, (pages.get(f.from) || 0) + 1);
+      if (r.n > r.f.length) capped = true;  // referers échantillonnés
+    }
+  }
+  // Le tri n'a lieu qu'ici, une fois, sur un onglet ouvert à la main.
+  lat.sort((a, b) => a - b);
+  const pct = (p) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor((lat.length * p) / 100))] : 0);
+  return {
+    settled, kinds, ms, weight, capped, answered: lat.length,
+    p50: pct(50), p90: pct(90), p99: pct(99),
+    depths: depthCols(depths),
+    hosts: [...hosts.entries()].sort((a, b) => b[1].n - a[1].n || b[1].bad - a[1].bad).slice(0, TOP),
+    pages: [...pages.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP),
+  };
+}
+
+/** Colonnes de profondeur, la queue au-delà de DEPTH_COLS regroupée. */
+function depthCols(depths) {
+  const out = [];
+  for (let i = 0; i < depths.length && i < DEPTH_COLS; i++) {
+    const d = depths[i] || { n: 0, bad: 0 };
+    out.push({ l: String(i), n: d.n, bad: d.bad });
+  }
+  if (depths.length > DEPTH_COLS) {
+    const tail = { l: DEPTH_COLS + "+", n: 0, bad: 0 };
+    for (let i = DEPTH_COLS; i < depths.length; i++) {
+      const d = depths[i];
+      if (d) { tail.n += d.n; tail.bad += d.bad; }
+    }
+    out.push(tail);
+  }
+  return out;
+}
+
+const card = (title, cap, body) =>
+  `<section class="card"><h3>${title}</h3><p class="cap">${cap}</p>${body}</section>`;
+
+/** Barre empilée par classe de status, aux couleurs de la barre principale. */
+function kindBar(row) {
+  const t = row.n || 1;
+  return `<div class="krow-t">` + ["2", "3", "4", "5", "x"].map((k) => !row[k] ? "" :
+    `<i style="width:${((row[k] / t) * 100).toFixed(2)}%;background:var(--s${k})"` +
+    ` title="${NUM.format(row[k])} ${k === "x" ? "sans réponse" : k + "xx"}"></i>`).join("") + `</div>`;
+}
+
+/** Histogramme en colonnes ; `hue` colore le fût, la part cassée coiffe en rouge. */
+function cols(data, hue, tip) {
+  const max = Math.max(1, ...data.map((d) => d.n));
+  return `<div class="cols">` + data.map((d, i) =>
+    `<div class="col" title="${esc(tip(d, i))}">` +
+      `<span class="col-n">${d.n ? COMPACT.format(d.n) : ""}</span>` +
+      `<div class="col-t"><span style="height:${(d.n ? Math.max(2, (d.n / max) * 100) : 0.7).toFixed(1)}%;background:${hue(i)}">` +
+        (d.bad ? `<i style="height:${((d.bad / d.n) * 100).toFixed(1)}%"></i>` : "") +
+      `</span></div>` +
+      `<span class="col-l">${esc(d.l)}</span>` +
+    `</div>`).join("") + `</div>`;
+}
+
+/** Classement horizontal : libellé, barre à l'échelle du premier, compte. */
+function topList(items) {
+  const max = Math.max(1, ...items.map((x) => x.n));
+  return `<ol class="tops">` + items.map((x) => {
+    const ok = ((x.n - x.bad) / max) * 100, bad = (x.bad / max) * 100;
+    return `<li title="${esc(x.tip)}">` +
+      `<span class="tl">${x.u && linkable(x.u)
+        ? `<a href="${esc(x.u)}" target="_blank" rel="noopener noreferrer nofollow">${esc(x.l)}</a>`
+        : esc(x.l)}</span>` +
+      `<span class="tt">${ok > 0 ? `<i style="width:${ok.toFixed(2)}%"></i>` : ""}` +
+        `${bad > 0 ? `<i class="b" style="width:${bad.toFixed(2)}%"></i>` : ""}</span>` +
+      `<b${x.bad === x.n ? ` style="color:var(--s4)"` : ""}>${NUM.format(x.n)}</b></li>`;
+  }).join("") + `</ol>`;
+}
+
+function synthView() {
+  if (stats && stats.live) {
+    return '<p class="note"><b>Synthèse à la fin de l’audit</b>Les graphiques portent sur l’audit complet : ils sont dressés une fois le crawl terminé.</p>';
+  }
+  const s = synth();
+  if (!s.settled) {
+    return '<p class="note"><b>Rien à résumer</b>Cet audit n’a enregistré aucune URL.</p>';
+  }
+  const urls = (n) => `${NUM.format(n)} URL${n === 1 ? "" : "s"}`;
+  const many = (n, one, more) => `${NUM.format(n)} ${n === 1 ? one : more}`;
+  const out = [];
+
+  out.push(card("Statuts par rôle",
+    "<b>pages</b> et <b>assets</b> sont sur le domaine audité, <b>externes</b> couvre tout le hors-domaine.",
+    KINDS.filter(([k]) => s.kinds[k].n).map(([k, l]) =>
+      `<div class="krow"><span class="krow-l">${l}</span>${kindBar(s.kinds[k])}` +
+      `<span class="krow-n">${NUM.format(s.kinds[k].n)}</span></div>`).join("")));
+
+  out.push(card("URLs par profondeur",
+    "Distance en clics depuis l’URL de départ. La coiffe rouge d’une colonne est cassée.",
+    cols(s.depths, () => "var(--accent)",
+      (d) => `profondeur ${d.l} — ${urls(d.n)}${d.bad ? `, dont ${many(d.bad, "cassée", "cassées")}` : ""}`)));
+
+  if (s.answered) {
+    out.push(card("Temps de réponse",
+      `${NUM.format(s.answered)} réponses reçues, <b>${bytes(s.weight) || "0 o"}</b> transférés.`,
+      cols(s.ms.map((n, i) => ({ l: MS_LABELS[i], n, bad: 0 })), (i) => `var(--s${MS_HUE[i]})`,
+        (d, i) => `${MS_TIPS[i]} — ${urls(d.n)}`) +
+      `<p class="pcts"><span>p50<b>${dur(s.p50)}</b></span>` +
+      `<span>p90<b>${dur(s.p90)}</b></span><span>p99<b>${dur(s.p99)}</b></span></p>`));
+  }
+
+  if (s.hosts.length) {
+    out.push(card("Domaines externes",
+      "Liens testés hors du domaine ; en rouge, ceux qui ont échoué.",
+      topList(s.hosts.map(([h, v]) => ({
+        l: h, u: "", n: v.n, bad: v.bad,
+        tip: `${h} — ${many(v.n, "lien testé", "liens testés")}` +
+             `${v.bad ? `, ${many(v.bad, "cassé", "cassés")}` : ""}`,
+      })))));
+  }
+
+  if (s.pages.length) {
+    out.push(card("Pages à corriger",
+      "Occurrences de liens cassés, par page qui les contient." +
+      (s.capped ? " Les referers sont échantillonnés à 20 par lien cassé : l’export CSV donne le compte exact." : ""),
+      topList(s.pages.map(([u, n]) => ({
+        l: short(u), u, n, bad: n,
+        tip: `${short(u)} — ${many(n, "lien cassé", "liens cassés")}`,
+      })))));
+  }
+
+  return `<div class="synth">${out.join("")}</div>`;
+}
+
 /* ---- end of crawl ----
    `now` distingue un audit qui vient de se terminer sous les yeux de
    l'utilisateur d'un audit relu depuis l'historique : pas de notification, et
@@ -897,11 +1130,12 @@ $("legend").addEventListener("click", (e) => {
   for (const c of $("legend").querySelectorAll(".chip")) c.setAttribute("aria-pressed", String(c.dataset.k === filter));
   render();
 });
-for (const [btn, v] of [[$("tab-broken"), "broken"], [$("tab-all"), "all"]]) {
-  btn.addEventListener("click", () => {
+const TABS = [["tab-broken", "broken"], ["tab-all", "all"], ["tab-synth", "synth"]];
+for (const [tab, v] of TABS) {
+  $(tab).addEventListener("click", () => {
     view = v;
-    $("tab-broken").setAttribute("aria-selected", String(v === "broken"));
-    $("tab-all").setAttribute("aria-selected", String(v === "all"));
+    for (const [t, w] of TABS) $(t).setAttribute("aria-selected", String(w === v));
+    $("q").hidden = v === "synth";   // le filtre ne porte pas sur la synthèse
     render();
   });
 }
