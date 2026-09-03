@@ -2,9 +2,14 @@
 
 type Rule = { allow: boolean; re: RegExp; len: number };
 
+/** A robots.txt may list many sitemaps; beyond this it is noise, not a map. */
+const MAX_SITEMAPS = 50;
+
 export class Robots {
   private rules: Rule[] = [];
   crawlDelay = 0;
+  /** URLs declared by `Sitemap:` lines, in file order. */
+  readonly sitemaps: string[] = [];
 
   static async fetch(origin: string, ua: string, signal?: AbortSignal): Promise<Robots> {
     const r = new Robots();
@@ -41,6 +46,13 @@ export class Robots {
         if (sawUa === false) applies = false;
         sawUa = true;
         if (v === "*" || v === token) applies = true;
+        continue;
+      }
+      // `Sitemap:` belongs to no group and is usually declared before the very
+      // first `User-agent:` line, so it is read before the group test below —
+      // and without touching `sawUa`, which only tracks agent/directive runs.
+      if (field === "sitemap") {
+        if (value && this.sitemaps.length < MAX_SITEMAPS) this.sitemaps.push(value);
         continue;
       }
       sawUa = false;

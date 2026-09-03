@@ -19,6 +19,17 @@ const page = (title: string, body: string) =>
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
 
+/** Deliberately: /soldes-privees is listed but linked from nowhere (an orphan),
+    /promos-ete is listed and broken, and /produits/lit-clos is linked but absent. */
+const SITEMAP = ["/", "/catalogue", "/blog", "/contact", "/mentions-legales",
+  "/produits/lampe-arc", "/produits/fauteuil-lc4", "/produits/table-tulipe",
+  "/soldes-privees", "/promos-ete"];
+
+const xml = (body: string) =>
+  new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
+    headers: { "content-type": "application/xml; charset=utf-8" },
+  });
+
 const routes: Record<string, () => Response | Promise<Response>> = {
   "/": () => page("Boutique de démonstration", `
     <p><a href="/produits/lampe-arc">Lampe Arc</a>, <a href="/produits/fauteuil-lc4">Fauteuil LC4</a>,
@@ -63,7 +74,22 @@ const routes: Record<string, () => Response | Promise<Response>> = {
   "/assets/app.js": () => new Response("// app", { headers: { "content-type": "text/javascript" } }),
   "/assets/hero.jpg": () => new Response("jpeg", { headers: { "content-type": "image/jpeg" } }),
   "/assets/favicon.png": () => new Response("png", { headers: { "content-type": "image/png" } }),
-  "/robots.txt": () => new Response("User-agent: *\nDisallow: /espace-client\n", { headers: { "content-type": "text/plain" } }),
+  "/robots.txt": () => new Response(
+    `Sitemap: http://localhost:${PORT}/sitemap.xml\nUser-agent: *\nDisallow: /espace-client\n`,
+    { headers: { "content-type": "text/plain" } }),
+  // An index pointing at one gzipped sitemap: both paths get exercised.
+  "/sitemap.xml": () => xml(
+    `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+    `<sitemap><loc>http://localhost:${PORT}/sitemap-pages.xml.gz</loc></sitemap>` +
+    `</sitemapindex>`),
+  "/sitemap-pages.xml.gz": () => new Response(
+    Bun.gzipSync(new TextEncoder().encode(
+      `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+      SITEMAP.map((p) => `<url><loc>http://localhost:${PORT}${p}</loc><lastmod>2024-06-01</lastmod></url>`).join("") +
+      `</urlset>`)),
+    { headers: { "content-type": "application/gzip" } }),
+  // Listed by the sitemap, linked by nothing: the orphan the audit should surface.
+  "/soldes-privees": () => page("Soldes privées", "<p>Page non liée depuis le site.</p>"),
   // Deliberately broken: 404 (linked from several pages), 500, timeout.
   "/promos-ete": () => new Response("Erreur serveur", { status: 500, headers: { "content-type": "text/html" } }),
   // Genuinely slow, to exercise in-flight aborts and the timeout setting.

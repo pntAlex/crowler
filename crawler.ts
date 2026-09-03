@@ -3,14 +3,40 @@
  * (streaming, no DOM) so memory stays flat regardless of page size.
  */
 import { Robots } from "./robots";
+import { collect } from "./sitemap";
 
 export const UA = "Crowler/1.0 (+link auditor)";
 const REF_CAP = 20; // referers kept per URL; refCount stays exact beyond it
 const MAX_BODY = 8 * 1024 * 1024;
+/* Hard caps on the stored SEO strings. The real length is kept beside the
+   truncated value, so « title trop long » stays diagnosable without holding an
+   unbounded string for each of 200 000 pages. */
+const SEO_CAP = { title: 300, desc: 500, h1: 300, url: 2000, robots: 200, lang: 20 };
 const SKIP_SCHEME = /^(mailto|tel|sms|javascript|data|blob|file|ftp|about|whatsapp|geo):/i;
 
 export type Kind = "page" | "asset" | "external";
 export type Ref = { from: string; text: string };
+
+/**
+ * On-page SEO signals of one HTML page. Strings are capped (SEO_CAP);
+ * `titleLen` / `descLen` carry the real length, measured before the cap.
+ */
+export type Seo = {
+  title: string;
+  titleLen: number;
+  desc: string;
+  descLen: number;
+  /** Text of the first h1; `h1Count` says how many the page carries. */
+  h1: string;
+  h1Count: number;
+  /** Absolute and normalized, "" when the page declares none. */
+  canonical: string;
+  /** meta robots, meta googlebot and X-Robots-Tag merged, lowercase. */
+  robots: string;
+  lang: string;
+  /** Words of the visible body, approximate. */
+  words: number;
+};
 
 export type Row = {
   url: string;
@@ -24,8 +50,16 @@ export type Row = {
   type: string;
   redirect?: string;
   error?: string;
+  /** HTML pages only, and only while `collectSeo` is on. */
+  seo?: Seo;
   refs: Ref[];
   refCount: number;
+  /** Listed by the site's own sitemap. */
+  inSitemap?: boolean;
+  /** `<lastmod>` as the sitemap wrote it, untouched: formats vary too much to normalise. */
+  lastmod?: string;
+  /** The URL the crawl started from: never an orphan, whoever links to it. */
+  seed?: boolean;
 };
 
 export type Options = {
@@ -37,6 +71,12 @@ export type Options = {
   includeSubdomains: boolean;
   followNofollow: boolean;
   ignoreQuery: boolean;
+  /** Collect the on-page SEO fields of HTML pages (~1 ko per page). */
+  collectSeo: boolean;
+  /** Seed the crawl with the sitemap, on top of the links found while crawling. */
+  useSitemap: boolean;
+  /** Forces one sitemap URL; empty means discover it from robots.txt then /sitemap.xml. */
+  sitemapUrl: string;
   concurrency: number;
   delayMs: number;
   maxDepth: number; // 0 = unlimited
@@ -52,6 +92,9 @@ export const DEFAULTS: Options = {
   includeSubdomains: false,
   followNofollow: false,
   ignoreQuery: false,
+  collectSeo: true,
+  useSitemap: true,
+  sitemapUrl: "",
   concurrency: 8,
   delayMs: 0,
   maxDepth: 0,
@@ -72,13 +115,19 @@ export type Stats = {
   capped: number;
   /** Count of excluded *link occurrences*, not of distinct URLs. */
   excluded: number;
+  /** Distinct URLs declared by the sitemap, whether or not they were crawled. */
+  sitemap: number;
+  /** Sitemap URLs no page links to. */
+  orphans: number;
   elapsed: number;
   live: boolean;
 };
 
+export type SitemapInfo = { sources: string[]; errors: string[] };
+
 export type Event =
   | { type: "batch"; rows: unknown[]; stats: Stats }
-  | { type: "done"; stats: Stats; reason: string };
+  | { type: "done"; stats: Stats; reason: string; sitemap: SitemapInfo };
 
 export const MAX_EXCLUDES = 25;
 const MAX_PATTERN = 300;
@@ -167,6 +216,11 @@ const enc = (s: string) => encodeURIComponent(s).replace(/%20/g, "+");
 export class Crawl {
   readonly id = Math.random().toString(36).slice(2, 10);
   readonly rows = new Map<string, Row>();
+  /** Normalised keys declared by the sitemap: the cross-check the rows alone cannot give. */
+  readonly sitemapUrls = new Set<string>();
+  /** Sitemap files actually read, and the ones that could not be. */
+  sitemapSources: string[] = [];
+  sitemapErrors: string[] = [];
   readonly opts: Options;
   readonly start: string;
   readonly startedAt = Date.now();
@@ -186,6 +240,7 @@ export class Crawl {
   private counts = { ok: 0, redirect: 0, clientError: 0, serverError: 0, failed: 0 };
   private excludes: RegExp[];
   private excluded = 0;
+  private orphans = 0;
   private blockPrivate: boolean;
 
   constructor(
@@ -217,8 +272,12 @@ export class Crawl {
       this.robots = await Robots.fetch(u.origin, UA, this.ac.signal);
       if (this.robots.crawlDelay > this.opts.delayMs) this.opts.delayMs = this.robots.crawlDelay;
     }
-    this.add(u, this.start, "page", 0, null);
     this.timer = setInterval(() => this.flush(), 250);
+    const seed = this.add(u, this.start, "page", 0, null);
+    if (seed) seed.seed = true;
+    // Before the first fetch: a URL the sitemap declares must already carry the
+    // flag when a link later reaches it, otherwise the orphan count drifts.
+    if (this.opts.useSitemap) await this.loadSitemap(u);
 
     const n = Math.max(1, Math.min(64, this.opts.concurrency));
     try {
@@ -228,7 +287,63 @@ export class Crawl {
       this.finishedAt = Date.now();
       if (!this.reason) this.reason = this.capped ? "limite de pages atteinte" : "terminé";
       this.flush();
-      this.onEvent({ type: "done", stats: this.stats(), reason: this.reason });
+      this.onEvent({ type: "done", stats: this.stats(), reason: this.reason, sitemap: this.sitemap() });
+    }
+  }
+
+  // ---- sitemap -----------------------------------------------------------
+
+  /**
+   * Discovery order: the forced URL, else the `Sitemap:` lines of robots.txt,
+   * else /sitemap.xml on the start origin. robots.txt is read for its sitemaps
+   * even when its rules are being ignored — that is where sites publish them.
+   */
+  private async loadSitemap(seed: URL) {
+    const forced = this.opts.sitemapUrl.trim();
+    let seeds: string[];
+    if (forced) {
+      seeds = [forced];
+    } else {
+      const robots = this.robots ?? (await Robots.fetch(seed.origin, UA, this.ac.signal));
+      seeds = robots.sitemaps.length ? robots.sitemaps : [new URL("/sitemap.xml", seed.origin).href];
+    }
+    if (this.ac.signal.aborted) return;
+
+    const found = await collect(seeds, {
+      ua: UA,
+      signal: this.ac.signal,
+      timeoutMs: this.opts.timeoutMs,
+      // A sitemap is remote input: it can point anywhere, the SSRF guard included.
+      allow: (u) => !this.blockPrivate || !isPrivateHost(u.hostname),
+    });
+    this.sitemapSources = found.sources;
+    this.sitemapErrors = found.errors;
+
+    for (const entry of found.urls) {
+      let u: URL;
+      try {
+        u = new URL(entry.loc);
+      } catch {
+        continue;
+      }
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      const key = normalize(u, this.opts.ignoreQuery);
+      if (this.sitemapUrls.has(key)) continue;
+      this.sitemapUrls.add(key);
+      if (this.excludes.length && matchExclude(key, this.excludes)) {
+        this.excluded++;
+        continue;
+      }
+      // Depth 0 and no referer: the sitemap is a starting point, not a page that
+      // links. That is exactly what makes `inSitemap && refCount === 0` an orphan.
+      // A sitemap that lists another host (the apex/www mismatch is the usual
+      // cause) still gets its URLs checked, but off-domain they are not explored.
+      const row = this.add(u, key, this.isInternal(u.hostname) ? "page" : "external", 0, null);
+      if (!row || row.inSitemap) continue;
+      row.inSitemap = true;
+      if (entry.lastmod) row.lastmod = entry.lastmod;
+      this.dirty.add(key);
+      if (isOrphan(row)) this.orphans++;
     }
   }
 
@@ -240,6 +355,7 @@ export class Crawl {
     if (seen) {
       if (ref && seen.refs.length < REF_CAP) seen.refs.push(ref);
       if (ref) {
+        if (isOrphan(seen)) this.orphans--; // gaining a referer ends orphanhood
         seen.refCount++;
         this.dirty.add(key);
       }
@@ -432,7 +548,7 @@ export class Crawl {
         }
       }
     } else if (!head && isHtml(row.type)) {
-      await this.parse(row, res);
+      await this.parse(row, res, res.headers.get("x-robots-tag"));
     } else {
       await res.body?.cancel().catch(() => {});
     }
@@ -449,7 +565,7 @@ export class Crawl {
   }
 
   /** Streams the body through HTMLRewriter, collecting hrefs without building a DOM. */
-  private async parse(row: Row, res: Response) {
+  private async parse(row: Row, res: Response, xRobots: string | null) {
     let base: string | null = null;
     let cur: { href: string; text: string; nofollow: boolean } | null = null;
     // hrefs are resolved after the stream ends so a late <base href> still applies.
@@ -499,6 +615,9 @@ export class Crawl {
       });
     }
 
+    const seo = this.opts.collectSeo ? new SeoScan() : null;
+    seo?.attach(rw);
+
     const reader = rw.transform(res).body!.getReader();
     let bytes = 0;
     try {
@@ -523,6 +642,40 @@ export class Crawl {
       const text = l.text ? l.text.replace(/\s+/g, " ").trim().slice(0, 120) : "";
       this.link(l.href, b, from, row.depth + 1, l.asset, l.nofollow, text);
     }
+    if (seo) {
+      const s = seo.finish(xRobots);
+      if (s.canonical) s.canonical = this.canonical(s.canonical, b, row);
+      row.seo = s;
+    }
+  }
+
+  /**
+   * Resolves a `<link rel=canonical>` and queues it, so the audit says whether
+   * the canonical target actually answers 200. Queued with a null referer: a
+   * canonical is a declaration, not an inbound link, and `refCount` must stay
+   * the count of real links.
+   * A cross-domain canonical is recorded but never queued — following it would
+   * turn a page-level hint into a crawl of somebody else's site. An excluded
+   * canonical is recorded and not queued either: excluded means never requested.
+   * Returns the normalized URL, or "" when the href is unusable.
+   */
+  private canonical(href: string, base: string, row: Row): string {
+    let u: URL;
+    try {
+      u = new URL(href, base);
+    } catch {
+      return "";
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    const key = normalize(u, this.opts.ignoreQuery);
+    const skip = !this.isInternal(u.hostname) || (this.excludes.length > 0 && !!matchExclude(key, this.excludes));
+    if (!skip) this.add(u, key, "page", row.depth, null);
+    return key.slice(0, SEO_CAP.url);
+  }
+
+  /** Which sitemap files were read, and which could not be. */
+  sitemap(): SitemapInfo {
+    return { sources: this.sitemapSources, errors: this.sitemapErrors };
   }
 
   // ---- reporting ---------------------------------------------------------
@@ -543,6 +696,8 @@ export class Crawl {
       ...this.counts,
       capped: this.capped,
       excluded: this.excluded,
+      sitemap: this.sitemapUrls.size,
+      orphans: this.orphans,
       elapsed: (this.finishedAt || Date.now()) - this.startedAt,
       live: this.running,
     };
@@ -570,6 +725,10 @@ export const isBroken = (r: Row) =>
   r.status >= 400 || (r.status === 0 && !!r.error && r.error !== "aborted");
 const isHtml = (t: string) => t === "" || t === "text/html" || t === "application/xhtml+xml";
 
+/** Declared by the sitemap yet linked from nowhere: reachable only through the
+ *  sitemap itself. The start URL is exempt — it is how the crawl got in. */
+export const isOrphan = (r: Row) => !!r.inSitemap && r.refCount === 0 && !r.seed;
+
 /** Referers are only shipped for broken URLs — that is the only place the UI shows them. */
 export function wire(r: Row) {
   const o: Record<string, unknown> = {
@@ -578,6 +737,9 @@ export function wire(r: Row) {
   };
   if (r.redirect) o.r = r.redirect;
   if (r.error) o.e = r.error;
+  if (r.seo) o.seo = r.seo;
+  if (r.inSitemap) o.sm = 1;
+  if (isOrphan(r)) o.or = 1;
   if (isBroken(r)) o.f = r.refs;
   return o;
 }
@@ -597,4 +759,209 @@ function errMsg(e: unknown): string {
     return (e.message || e.name).slice(0, 140);
   }
   return String(e).slice(0, 140);
+}
+
+// ---- SEO -------------------------------------------------------------------
+
+/**
+ * Accumulates streamed text, collapsing whitespace runs into single spaces.
+ * Keeps the first `cap` characters while counting the full length: a 900
+ * character title is reported as such without ever being stored.
+ */
+class Chunks {
+  private out = "";
+  /** A whitespace run is pending; it is emitted only if more text follows. */
+  private gap = false;
+  len = 0;
+
+  constructor(private cap: number) {}
+
+  add(raw: string) {
+    let s = raw.replace(/\s+/g, " ");
+    if (!s) return;
+    const lead = s.startsWith(" ");
+    const trail = s.length > 1 && s.endsWith(" ");
+    s = s.slice(lead ? 1 : 0, trail ? -1 : undefined);
+    if (s) {
+      if (lead && this.len) this.gap = true;
+      if (this.gap) {
+        this.push(" ");
+        this.gap = false;
+      }
+      this.push(s);
+    }
+    if ((trail || lead) && this.len) this.gap = true;
+  }
+
+  private push(s: string) {
+    this.len += s.length;
+    if (this.out.length < this.cap) this.out += s.slice(0, this.cap - this.out.length);
+  }
+
+  get value() {
+    return this.out;
+  }
+}
+
+/** Directive names of the robots vocabulary, to tell `googlebot: noindex`
+ *  (an agent prefix) from `unavailable_after: 2030-01-01` (a directive value). */
+const ROBOTS_DIRECTIVES = new Set([
+  "all", "none", "noindex", "index", "nofollow", "follow", "noarchive", "nosnippet",
+  "notranslate", "noimageindex", "nocache", "noodp", "indexifembedded",
+  "unavailable_after", "max-snippet", "max-image-preview", "max-video-preview",
+]);
+
+/**
+ * Splits a robots value into directives, dropping those addressed to another
+ * crawler. `noindex` binds every agent; a `googlebot:` prefix is kept, because
+ * Google's rules are what an SEO audit is about; `bingbot: noindex` is dropped.
+ * A prefix carries over to the directives that follow it inside the same value,
+ * the way Google documents the header.
+ *
+ * Known limit: several `X-Robots-Tag` headers arrive already joined by the
+ * Fetch API, so a prefix from the first one carries into the next.
+ */
+function directives(value: string): string[] {
+  const out: string[] = [];
+  let agent = "";
+  for (const raw of value.toLowerCase().split(",")) {
+    const piece = raw.trim();
+    if (!piece) continue;
+    const i = piece.indexOf(":");
+    if (i > 0 && !ROBOTS_DIRECTIVES.has(piece.slice(0, i).trim())) {
+      agent = piece.slice(0, i).trim();
+      const rest = piece.slice(i + 1).trim();
+      if (agent === "googlebot" && rest) out.push(rest);
+      continue;
+    }
+    if (!agent || agent === "googlebot") out.push(piece);
+  }
+  return out;
+}
+
+/**
+ * Collects the on-page SEO fields as the body streams by, one instance per
+ * page. Everything it holds is capped, so a huge page costs no more memory
+ * than a small one.
+ */
+class SeoScan {
+  private title = new Chunks(SEO_CAP.title);
+  private titleOpen = false;
+  private titleSeen = false;
+  private h1 = new Chunks(SEO_CAP.h1);
+  private h1Open = false;
+  private h1Count = 0;
+  private desc: Chunks | null = null;
+  private canonical = "";
+  private robots: string[] = [];
+  private lang = "";
+  private words = 0;
+  private inWord = false;
+  /** > 0 while inside markup whose text is not page copy. */
+  private mute = 0;
+
+  attach(rw: HTMLRewriter) {
+    rw.on("html", {
+      element: (el) => {
+        if (!this.lang) this.lang = (el.getAttribute("lang") ?? "").trim().slice(0, SEO_CAP.lang);
+      },
+    })
+      .on("head title", {
+        element: (el) => {
+          if (this.titleSeen) return; // only the first one counts
+          this.titleSeen = true;
+          this.titleOpen = !el.selfClosing;
+          if (!el.selfClosing) el.onEndTag(() => void (this.titleOpen = false));
+        },
+        text: (t) => {
+          if (this.titleOpen) this.title.add(t.text);
+        },
+      })
+      .on("h1", {
+        element: (el) => {
+          this.h1Count++;
+          if (this.h1Count > 1) return;
+          this.h1Open = !el.selfClosing;
+          if (!el.selfClosing) el.onEndTag(() => void (this.h1Open = false));
+        },
+        text: (t) => {
+          if (!this.h1Open) return;
+          this.h1.add(t.text);
+          // Separate distinct text nodes, as anchor text does: otherwise
+          // <h1>Prix<span>cassés</span></h1> collapses into "Prixcassés".
+          if (t.lastInTextNode) this.h1.add(" ");
+        },
+      })
+      // Attribute *values* are matched case-sensitively by the selector engine,
+      // so `name` is read and lowered here rather than selected on.
+      .on("meta[name][content]", {
+        element: (el) => {
+          const name = (el.getAttribute("name") ?? "").trim().toLowerCase();
+          const content = el.getAttribute("content") ?? "";
+          if (name === "description") {
+            if (!this.desc) {
+              this.desc = new Chunks(SEO_CAP.desc);
+              this.desc.add(content);
+            }
+          } else if (name === "robots" || name === "googlebot") {
+            this.robots.push(...directives(content));
+          }
+        },
+      })
+      .on("link[rel~=canonical][href]", {
+        element: (el) => {
+          if (this.canonical) return;
+          const href = (el.getAttribute("href") ?? "").trim();
+          // An absurdly long href is dropped rather than truncated: a truncated
+          // URL would still resolve, and would then be requested.
+          if (href && href.length <= SEO_CAP.url) this.canonical = href;
+        },
+      })
+      // Markup whose text is not page copy. All five always carry an end tag,
+      // unlike <head> and <body>, so the counter cannot get stuck open on a
+      // page that omits them.
+      .on("title, script, style, noscript, template", {
+        element: (el) => {
+          if (el.selfClosing) return;
+          this.mute++;
+          el.onEndTag(() => void this.mute--);
+        },
+      })
+      // Document level rather than `body`: <body> is optional in HTML, and a
+      // page that omits it would otherwise count zero word.
+      .onDocument({
+        text: (t) => {
+          if (!this.mute) this.count(t.text);
+          if (t.lastInTextNode) this.inWord = false;
+        },
+      });
+  }
+
+  /** Words counted by whitespace transitions, chunk by chunk. */
+  private count(s: string) {
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      const space = c === 32 || c === 10 || c === 9 || c === 13 || c === 12 || c === 160;
+      if (!space && !this.inWord) this.words++;
+      this.inWord = !space;
+    }
+  }
+
+  /** `xRobots` is the X-Robots-Tag header, merged into the meta directives.
+   *  `canonical` comes back as written in the page: the caller resolves it. */
+  finish(xRobots: string | null): Seo {
+    const robots = [...this.robots, ...(xRobots ? directives(xRobots) : [])];
+    return {
+      title: this.title.value,
+      titleLen: this.title.len,
+      desc: this.desc?.value ?? "",
+      descLen: this.desc?.len ?? 0,
+      h1: this.h1.value,
+      h1Count: this.h1Count,
+      canonical: this.canonical,
+      robots: [...new Set(robots)].join(", ").slice(0, SEO_CAP.robots),
+      lang: this.lang,
+      words: this.words,
+    };
+  }
 }

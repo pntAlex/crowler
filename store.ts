@@ -9,7 +9,7 @@
  */
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { isBroken, type Crawl, type Options, type Row, type Stats } from "./crawler";
+import { isBroken, type Crawl, type Options, type Row, type SitemapInfo, type Stats } from "./crawler";
 
 const ROOT = resolve(process.env.DATA_DIR ?? "./data");
 /** Au-delà, les audits les plus anciens sont supprimés à la fin d'un crawl. */
@@ -29,6 +29,8 @@ export type Meta = {
   opts: Options;
   stats: Stats | null;
   broken: number;
+  /** Fichiers sitemap lus, et ceux qui ne l'ont pas été. */
+  sitemap: SitemapInfo;
 };
 
 const dir = (id: string) => join(ROOT, id);
@@ -55,6 +57,7 @@ export function metaOf(c: Crawl): Meta {
     opts: c.opts,
     stats: c.stats(),
     broken,
+    sitemap: c.sitemap(),
   };
 }
 

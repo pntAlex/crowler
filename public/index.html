@@ -389,12 +389,19 @@ td.dim{color:var(--ink-3)}
         <label class="sw"><input type="checkbox" id="includeSubdomains">Explorer les sous-domaines</label>
         <label class="sw"><input type="checkbox" id="followNofollow">Suivre les liens nofollow</label>
         <label class="sw"><input type="checkbox" id="ignoreQuery">Ignorer les query strings</label>
+        <label class="sw"><input type="checkbox" id="collectSeo" checked>Relever les balises SEO</label>
+        <label class="sw"><input type="checkbox" id="useSitemap" checked>Lire le sitemap du site</label>
         <label class="sw"><input type="checkbox" id="notify" checked>Notifier sur le bureau à la fin <span id="notify-hint" style="color:var(--ink-3)"></span></label>
       </div>
       <label class="f" style="grid-column:1/-1">
         <span>Exclure du crawl <em>— une expression régulière par ligne, insensible à la casse, testée sur l’URL entière</em></span>
         <textarea id="exclude" rows="3" spellcheck="false" autocapitalize="off"
           placeholder="/wp-admin/&#10;\.pdf$&#10;[?&amp;]utm_"></textarea>
+      </label>
+      <label class="f" style="grid-column:1/-1">
+        <span>Sitemap <em>— laisser vide pour le chercher dans robots.txt, puis sur /sitemap.xml</em></span>
+        <input id="sitemapUrl" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
+          placeholder="https://exemple.fr/sitemap_index.xml">
       </label>
     </div>
   </details>
@@ -423,6 +430,8 @@ td.dim{color:var(--ink-3)}
   <nav class="rail" role="tablist">
     <button class="tab" id="tab-broken" role="tab" aria-selected="true" aria-controls="panel">Liens cassés <span id="n-broken">0</span></button>
     <button class="tab" id="tab-all" role="tab" aria-selected="false" aria-controls="panel">Toutes les URLs <span id="n-all">0</span></button>
+    <button class="tab" id="tab-orphans" role="tab" aria-selected="false" aria-controls="panel"
+      title="Déclarées par le sitemap, mais aucun lien du site n’y mène">Orphelines <span id="n-orphans">0</span></button>
     <button class="tab" id="tab-synth" role="tab" aria-selected="false" aria-controls="panel">Synthèse</button>
     <div class="tools">
       <input id="q" type="search" placeholder="filtrer…" spellcheck="false" aria-label="Filtrer les URLs">
@@ -441,17 +450,19 @@ td.dim{color:var(--ink-3)}
 <script>
 const $ = (id) => document.getElementById(id);
 const NUM = new Intl.NumberFormat("fr-FR");
-const BOOLS = ["checkExternal","checkAssets","respectRobots","includeSubdomains","followNofollow","ignoreQuery"];
+const BOOLS = ["checkExternal","checkAssets","respectRobots","includeSubdomains","followNofollow","ignoreQuery","collectSeo","useSitemap"];
 const NUMS = ["concurrency","delayMs","maxDepth","maxPages","timeoutMs"];
+const STRS = ["sitemapUrl"];
 const MAX_TABLE_ROWS = 500;
 const TITLE = document.title;
 const IDLE = '<p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>';
 const WHEN = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
-const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?}
+const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?,seo?}
 let sessions = [];           // en-têtes d'audits, du plus récent au plus ancien
 let stats = null, id = null, es = null, target = "";
 let view = "broken", filter = null, query = "", sortKey = "s", sortDir = -1;
+let smInfo = null;   // fichiers sitemap lus par l'audit affiché, et leurs erreurs
 let painting = false, pendingPaint = false, halting = false, starting = false;
 let notice = null;   // message d'erreur affiché à la place du panneau vide
 
@@ -486,6 +497,7 @@ $("form").addEventListener("submit", async (e) => {
   const opts = {};
   for (const k of BOOLS) opts[k] = $(k).checked;
   for (const k of NUMS) opts[k] = Number($(k).value);
+  for (const k of STRS) opts[k] = $(k).value.trim();
   opts.exclude = $("exclude").value.split("\n").map((t) => t.trim()).filter(Boolean);
   askNotify();
 
@@ -622,6 +634,7 @@ async function show(sid) {
     return loadSessions();
   }
   id = m.id; target = m.start; stats = m.stats; filter = null; notice = null;
+  smInfo = m.sitemap || null;
   rows.clear();
   applyOpts(m);
   tools(true);
@@ -673,6 +686,7 @@ function applyOpts(m) {
   if (!m.opts) return;
   for (const k of BOOLS) if (typeof m.opts[k] === "boolean") $(k).checked = m.opts[k];
   for (const k of NUMS) if (Number.isFinite(m.opts[k])) $(k).value = m.opts[k];
+  for (const k of STRS) $(k).value = typeof m.opts[k] === "string" ? m.opts[k] : "";
   $("exclude").value = (m.opts.exclude || []).join("\n");
 }
 
@@ -686,7 +700,7 @@ function crumb(m) {
 /** Écran vide, prêt pour un nouvel audit. */
 function blank() {
   if (es) { es.close(); es = null; }
-  id = null; target = ""; stats = null; filter = null; halting = false; notice = null;
+  id = null; target = ""; stats = null; filter = null; halting = false; notice = null; smInfo = null;
   rows.clear();
   busy(false);
   tools(false);
@@ -702,7 +716,7 @@ function blank() {
 $("new").addEventListener("click", blank);
 
 function reset() {
-  rows.clear(); stats = null; filter = null; id = null; notice = null;
+  rows.clear(); stats = null; filter = null; id = null; notice = null; smInfo = null;
   if (es) { es.close(); es = null; }
   $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
   $("readout").hidden = false;
@@ -722,6 +736,7 @@ function connect() {
     if (m.rows) for (const r of m.rows) rows.set(r.u, r);
     if (m.stats) stats = m.stats;
     if (m.type === "done") {
+      smInfo = m.sitemap || null;
       es.close(); es = null;
       busy(false);
       finish(m);
@@ -777,6 +792,7 @@ function render() {
     $("rd-unit").textContent = "explorées";
     $("rd-rest").innerHTML =
       pair(NUM.format(stats.queued), "en file") + pair(stats.inflight, "en cours") + pair(rate, "URLs/s") +
+      (stats.sitemap ? pair(NUM.format(stats.sitemap), "du sitemap") : "") +
       (stats.excluded ? pair(NUM.format(stats.excluded), stats.excluded === 1 ? "lien exclu" : "liens exclus") : "");
     if (halting) $("rd-tag").textContent = "arrêt en cours";
     document.title = `${NUM.format(stats.done)} URLs · exploration — crowler`;
@@ -784,8 +800,10 @@ function render() {
 
   const all = [...rows.values()];
   const bad = all.filter(broken);
+  const lost = all.filter((r) => r.or);
   $("n-broken").textContent = NUM.format(bad.length);
   $("n-all").textContent = NUM.format(all.length);
+  $("n-orphans").textContent = NUM.format(lost.length);
   if (!id && !starting) { $("panel").innerHTML = notice || IDLE; return; }
   // Pendant le crawl, l'entrée d'historique correspondante suit le compteur.
   if (stats && stats.live) {
@@ -794,6 +812,7 @@ function render() {
   }
 
   if (view === "synth") { $("panel").innerHTML = synthView(); return; }
+  if (view === "orphans") { $("panel").innerHTML = orphanView(keep(lost), lost.length); return; }
   const list = keep(view === "broken" ? bad : all);
   $("panel").innerHTML = view === "broken" ? brokenView(list, bad.length) : tableView(list, all.length);
 }
@@ -838,6 +857,20 @@ function brokenView(list, total) {
   }).join("");
 }
 
+/** Les orphelines n'ont, par définition, aucun referer à montrer : la table
+    des URLs suffit, la colonne « liens entrants » y vaut zéro partout. */
+function orphanView(list, total) {
+  if (list.length) return tableView(list, total);
+  if (total) return '<p class="note"><b>Aucun résultat</b>Ce filtre ne correspond à aucune page orpheline.</p>';
+  if (stats && stats.live) return '<p class="note">Exploration en cours…</p>';
+  if (!stats || !stats.sitemap) {
+    return '<p class="note"><b>Aucun sitemap lu</b>Cet audit n’a trouvé aucun sitemap, ou l’option « Lire le sitemap du site » était décochée.' +
+      (smInfo && smInfo.errors.length ? "<br>" + esc(smInfo.errors[0]) : "") + "</p>";
+  }
+  return '<p class="note"><b>Aucune page orpheline</b>Les ' + NUM.format(stats.sitemap) +
+    ' URLs du sitemap sont toutes atteignables par un lien du site.</p>';
+}
+
 const detail = (e) => ({
   robots: "bloqué par robots.txt", "private-host": "cible sur réseau privé, ignorée",
   "bad-url": "href malformé", timeout: "délai dépassé", aborted: "requête interrompue",
@@ -846,7 +879,8 @@ const detail = (e) => ({
 
 const COLS = [
   ["s", "statut"], ["u", "url"], ["k", "type"], ["d", "prof."],
-  ["t", "content-type"], ["m", "ms"], ["b", "taille"], ["n", "liens entrants"], ["r", "redirige vers"],
+  ["t", "content-type"], ["m", "ms"], ["b", "taille"], ["n", "liens entrants"], ["sm", "sitemap"],
+  ["r", "redirige vers"],
 ];
 
 function tableView(list, total) {
@@ -873,6 +907,7 @@ function tableView(list, total) {
       `<td class="n">${r.m}</td>` +
       `<td class="n">${bytes(r.b)}</td>` +
       `<td class="n">${r.n ? NUM.format(r.n) : ""}</td>` +
+      `<td class="dim">${r.or ? `<b style="color:var(--s4)">orpheline</b>` : r.sm ? "oui" : ""}</td>` +
       `<td class="u dim">${r.r ? esc(short(r.r)) : ""}</td>` +
     `</tr>`;
   }).join("");
@@ -907,8 +942,14 @@ function synth() {
   const hosts = new Map();
   const pages = new Map();
   let settled = 0, weight = 0, capped = false;
+  let sm = 0, orphans = 0, unlisted = 0;
 
   for (const r of rows.values()) {
+    // Le décompte sitemap porte sur toutes les lignes : une URL déclarée puis
+    // bloquée par robots.txt reste une URL du sitemap.
+    if (r.sm) sm++;
+    if (r.or) orphans++;
+    else if (r.k === "page" && !r.sm) unlisted++;
     if (!r.s && !r.e) continue;   // encore en file : rien à résumer
     settled++;
     const bad = broken(r);
@@ -940,6 +981,7 @@ function synth() {
   const pct = (p) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor((lat.length * p) / 100))] : 0);
   return {
     settled, kinds, ms, weight, capped, answered: lat.length,
+    sm, orphans, unlisted, declared: (stats && stats.sitemap) || 0,
     p50: pct(50), p90: pct(90), p99: pct(99),
     depths: depthCols(depths),
     hosts: [...hosts.entries()].sort((a, b) => b[1].n - a[1].n || b[1].bad - a[1].bad).slice(0, TOP),
@@ -1027,6 +1069,25 @@ function synthView() {
     cols(s.depths, () => "var(--accent)",
       (d) => `profondeur ${d.l} — ${urls(d.n)}${d.bad ? `, dont ${many(d.bad, "cassée", "cassées")}` : ""}`)));
 
+  if (s.declared || s.sm) {
+    out.push(card("Sitemap",
+      "Ce que le sitemap déclare, face à ce que le crawl atteint en suivant les liens." +
+      (smInfo && smInfo.sources.length
+        ? ` ${many(smInfo.sources.length, "fichier lu", "fichiers lus")}.` : "") +
+      (smInfo && smInfo.errors.length
+        ? ` <b style="color:var(--s4)">${esc(smInfo.errors[0])}</b>` : ""),
+      topList([
+        { l: "déclarées", u: "", n: s.declared, bad: 0,
+          tip: `${urls(s.declared)} listées par le sitemap, doublons écartés` },
+        { l: "aussi liées", u: "", n: s.sm - s.orphans, bad: 0,
+          tip: `${urls(s.sm - s.orphans)} du sitemap qu’un lien du site atteint également` },
+        { l: "orphelines", u: "", n: s.orphans, bad: s.orphans,
+          tip: `${urls(s.orphans)} du sitemap qu’aucun lien du site n’atteint` },
+        { l: "liées, hors sitemap", u: "", n: s.unlisted, bad: 0,
+          tip: `${urls(s.unlisted)} du domaine trouvées en suivant les liens, absentes du sitemap` },
+      ])));
+  }
+
   if (s.answered) {
     out.push(card("Temps de réponse",
       `${NUM.format(s.answered)} réponses reçues, <b>${bytes(s.weight) || "0 o"}</b> transférés.`,
@@ -1065,6 +1126,7 @@ function synthView() {
    pas de rechargement de la liste, pour le second. */
 function finish(m, now = true) {
   const bad = [...rows.values()].filter(broken).length;
+  const lost = [...rows.values()].filter((r) => r.or).length;
   if (!m.stats) {
     $("readout").dataset.state = "done";
     $("rd-tag").textContent = m.reason || "interrompu";
@@ -1081,6 +1143,7 @@ function finish(m, now = true) {
   $("rd-unit").textContent = "URLs explorées";
   $("rd-rest").innerHTML =
     pair(NUM.format(bad), bad === 1 ? "lien cassé" : "liens cassés") +
+    (lost ? pair(NUM.format(lost), lost === 1 ? "orpheline" : "orphelines") : "") +
     (m.stats.excluded ? pair(NUM.format(m.stats.excluded), m.stats.excluded === 1 ? "lien exclu" : "liens exclus") : "") +
     pair(secs, "");
   document.title = bad ? `${NUM.format(bad)} liens cassés — crowler` : TITLE;
@@ -1130,7 +1193,7 @@ $("legend").addEventListener("click", (e) => {
   for (const c of $("legend").querySelectorAll(".chip")) c.setAttribute("aria-pressed", String(c.dataset.k === filter));
   render();
 });
-const TABS = [["tab-broken", "broken"], ["tab-all", "all"], ["tab-synth", "synth"]];
+const TABS = [["tab-broken", "broken"], ["tab-all", "all"], ["tab-orphans", "orphans"], ["tab-synth", "synth"]];
 for (const [tab, v] of TABS) {
   $(tab).addEventListener("click", () => {
     view = v;

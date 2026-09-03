@@ -50,6 +50,9 @@ function clampOpts(raw: unknown): Partial<Options> {
     includeSubdomains: bool("includeSubdomains"),
     followNofollow: bool("followNofollow"),
     ignoreQuery: bool("ignoreQuery"),
+    collectSeo: bool("collectSeo"),
+    useSitemap: bool("useSitemap"),
+    sitemapUrl: typeof o.sitemapUrl === "string" ? o.sitemapUrl.trim().slice(0, 2048) : "",
     concurrency: num("concurrency", 1, 64),
     delayMs: num("delayMs", 0, 10_000),
     maxDepth: num("maxDepth", 0, 50),
@@ -75,8 +78,9 @@ async function meta(id: string): Promise<store.Meta | null> {
   if (j) return store.metaOf(j.crawl);
   const m = await store.read(id);
   if (!m) return null;
-  if (!m.finishedAt) return { ...m, finishedAt: m.startedAt, reason: "interrompu" };
-  return m;
+  const sitemap = m.sitemap ?? { sources: [], errors: [] }; // audits d'avant le sitemap
+  if (!m.finishedAt) return { ...m, sitemap, finishedAt: m.startedAt, reason: "interrompu" };
+  return { ...m, sitemap };
 }
 
 /** The rows of an audit: from memory while the job is live, from disk afterwards. */
@@ -125,6 +129,18 @@ const server = Bun.serve({
         }
 
         const opts = clampOpts(body.opts);
+        // The forced sitemap URL is fetched by the crawler like any other
+        // target, so it passes the same two gates as the seed.
+        if (opts.sitemapUrl) {
+          let sm: URL;
+          try {
+            sm = new URL(opts.sitemapUrl);
+          } catch {
+            return bad("URL de sitemap invalide");
+          }
+          if (sm.protocol !== "http:" && sm.protocol !== "https:") return bad("sitemap : seuls http et https sont acceptés");
+          if (BLOCK_PRIVATE && isPrivateHost(sm.hostname)) return bad("sitemap sur réseau privé refusé", 403);
+        }
         const { res: excludes, errors } = compileExcludes(opts.exclude ?? []);
         if (errors.length) return bad("exclusion : " + errors.join(" ; "));
         // Starting inside an excluded zone is a contradictory request; say so

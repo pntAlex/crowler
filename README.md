@@ -59,6 +59,9 @@ Tous modifiables dans l'interface, sous « Réglages ».
 | Explorer les sous-domaines | désactivé | `blog.exemple.fr` compte comme interne |
 | Suivre les liens nofollow | désactivé | explore aussi les `rel="nofollow"` |
 | Ignorer les query strings | désactivé | `?utm=…` ne crée plus d'URL distincte |
+| Relever les balises SEO | activé | `title`, `description`, `h1`, canonique, `robots`, `lang` et volume de texte |
+| Lire le sitemap du site | activé | ajoute les URLs du sitemap au crawl, et révèle les pages orphelines |
+| Sitemap | vide | force une URL de sitemap ; vide = découverte par `robots.txt` puis `/sitemap.xml` |
 | Notifier sur le bureau à la fin | activé | notification système quand l'audit se termine |
 | Parallèle | 8 | requêtes simultanées |
 | Délai | 0 ms | pause par worker entre deux requêtes |
@@ -171,10 +174,97 @@ comprises — un site qui répond vite ses erreurs paraît rapide. Et « Pages �
 les referers échantillonnés, donc plafonnés à 20 par lien cassé ; la carte le signale dès qu'un
 lien dépasse ce seuil, et `liens-casses.csv` porte le compte exact.
 
+## SEO on-page
+
+Chaque page HTML explorée porte un bloc `seo`, relevé dans la même passe de lecture que les
+liens — le HTML n'est parcouru qu'une fois :
+
+| Champ | Contenu |
+|---|---|
+| `title` / `titleLen` | le premier `<title>`, espaces normalisés / sa longueur réelle |
+| `desc` / `descLen` | `meta name=description` / sa longueur réelle |
+| `h1` / `h1Count` | le texte du premier `h1` / le nombre de `h1` de la page |
+| `canonical` | `link rel=canonical`, résolue en absolu et normalisée, `""` si absente |
+| `robots` | `meta robots`, `meta googlebot` et l'en-tête `X-Robots-Tag` fusionnés, en minuscules |
+| `lang` | l'attribut `lang` de `<html>` |
+| `words` | le nombre de mots du texte visible, approximatif |
+
+Les chaînes sont plafonnées avant stockage — 300 caractères pour `title` et `h1`, 500 pour
+`desc` — mais la longueur réelle est conservée à côté : un `title` de 900 caractères se
+diagnostique sans être gardé en mémoire. À 200 000 pages, le bloc coûte environ 1 ko par page
+HTML ; décocher « Relever les balises SEO » le supprime entièrement.
+
+La canonique est **mise en file** : sans cela, le rapport dirait quelle URL la page déclare
+canonique sans dire si cette URL répond. Elle est ajoutée sans referer, donc `ref_count` reste
+le compte des vrais liens entrants et une canonique ne fait pas passer une page pour liée. Une
+canonique hors domaine est relevée sans être suivie — sinon un simple attribut lâcherait le
+crawl sur le site d'un tiers — et une canonique visée par une exclusion n'est pas requêtée non
+plus : exclu veut dire jamais requêté.
+
+Pour `robots`, seules sont retenues les directives qui s'appliquent à un robot d'indexation
+générique : celles sans agent nommé (`noindex`, `nofollow`) et celles préfixées `googlebot:`.
+`bingbot: noindex` est ignoré, et un préfixe d'agent porte sur les directives qui le suivent
+dans la même valeur, comme Google le documente. Réserve : plusieurs en-têtes `X-Robots-Tag`
+arrivent déjà concaténés par l'API Fetch, un préfixe du premier déborde donc sur le suivant.
+
+`words` compte les transitions d'espace sur le texte du document, hors `script`, `style`,
+`noscript`, `template` et `title`. C'est un ordre de grandeur — de quoi repérer les pages
+vides ou trop minces, pas une mesure éditoriale.
+
+Le bloc n'est présent que sur les pages HTML : les assets et les liens externes sont testés en
+`HEAD` et n'ont rien à relever. Il n'apparaît ni dans les CSV ni dans l'interface pour
+l'instant ; il est écrit dans `rows.jsonl` et servi par l'API. Comme le format est sans schéma,
+les audits enregistrés avant cette version se relisent tels quels, sans clé `seo`.
+
+## Sitemap et pages orphelines
+
+Le sitemap est lu avant le premier `GET`, et ses URLs entrent dans le crawl comme points de
+départ. Il est cherché dans cet ordre : l'URL forcée dans les réglages, sinon les lignes
+`Sitemap:` de `robots.txt`, sinon `/sitemap.xml` sur l'origine de départ. `robots.txt` est lu
+pour ses sitemaps même quand « Respecter robots.txt » est décoché — c'est là que les sites les
+publient, et le lire ne revient pas à y obéir.
+
+Le lecteur est dans `sitemap.ts`, sans dépendance, en flux par `HTMLRewriter` : `<loc>` et
+`<lastmod>` sont des éléments inconnus pour un parseur HTML, mais leur texte est bien restitué,
+donc un sitemap de 200 000 URLs ne passe jamais par un DOM ni par une chaîne entière.
+
+| Cas | Traitement |
+|---|---|
+| `<urlset>` | une liste de pages, avec le `<lastmod>` s'il est présent |
+| `<sitemapindex>` | suivi sur **un seul** niveau, 50 sous-sitemaps au plus |
+| `.xml.gz` | décompressé par `DecompressionStream("gzip")`, reconnu aux octets magiques et non à l'extension ni au `content-type`, que les serveurs se trompent régulièrement |
+| `&amp;` dans `<loc>` | décodé — les entités sont la règle dans un sitemap, et `HTMLRewriter` livre le texte source |
+| `<![CDATA[…]]>` | déballé : le tokenizer HTML le rend comme un commentaire, pas comme du texte |
+| `<image:loc>` | ignoré, seul `<loc>` est une page |
+
+Bornes : 20 Mo par fichier après décompression, 200 000 URLs pour l'ensemble, 50 sous-sitemaps.
+Un fichier illisible est signalé sans faire échouer les autres, et un index qui se pointe
+lui-même n'est lu qu'une fois. Un sitemap est une entrée distante comme une autre : ses URLs
+passent la même garde réseau privé que la cible du crawl, la même liste d'exclusions et les
+mêmes règles `robots.txt` — une URL que le site publie et s'interdit à la fois apparaît donc au
+rapport avec `error = robots`.
+
+### Orphelines
+
+Les URLs du sitemap sont ajoutées à profondeur 0 **sans referer**. Cela suffit à définir une
+page orpheline, sans compteur supplémentaire :
+
+```
+orpheline = présente dans le sitemap  ET  ref_count == 0
+```
+
+Autrement dit : le site la publie, mais aucune de ses pages n'y mène. L'URL de départ est la
+seule exemption — c'est par elle que le crawl est entré. L'onglet « Orphelines » les liste, et
+la carte « Sitemap » de la synthèse met les quatre nombres côte à côte : déclarées, aussi liées,
+orphelines, et les pages liées que le sitemap ne déclare pas.
+
+Une URL du sitemap hors du domaine audité (le décalage apex/`www` en est la cause habituelle)
+est testée mais pas explorée, comme n'importe quel lien externe.
+
 ## Exports
 
 **`pages-<domaine>.csv`** — une ligne par URL :
-`url, status, kind, depth, content_type, response_ms, bytes, redirect_to, error, ref_count, first_referer`
+`url, status, kind, depth, content_type, response_ms, bytes, redirect_to, error, ref_count, first_referer, in_sitemap, orphan, sitemap_lastmod`
 
 **`liens-casses-<domaine>.csv`** — une ligne par *occurrence* de lien cassé, c'est-à-dire une
 ligne par correction à faire :
@@ -184,6 +274,9 @@ ligne par correction à faire :
 (`timeout`, `robots`, `bad-url`, `private-host`, ou le message réseau).
 
 ## Comment ça marche
+
+Les balises SEO suivent le même principe : `title`, `h1` et le compte de mots sont accumulés
+au fil des morceaux de texte, dans des tampons bornés, jamais dans un DOM.
 
 Les liens sont extraits avec `HTMLRewriter`, le parseur HTML natif de Bun (moteur lolhtml, en
 Rust) : les `href` sont relevés pendant l'arrivée des octets, sans jamais construire de DOM. La
@@ -229,7 +322,8 @@ instance avec `BLOCK_PRIVATE_IPS=0` sur un réseau non maîtrisé.
 bun test
 ```
 
-28 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+38 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
 absence de boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
-pages, `robots.txt`, garde SSRF, normalisation d'URL, forme des deux CSV, aller-retour d'un
+pages, `robots.txt`, garde SSRF, normalisation d'URL, extraction SEO — plafonds, fusion de
+`X-Robots-Tag`, canonique mise en file sans referer —, forme des deux CSV, aller-retour d'un
 audit par le disque et refus des identifiants qui sortiraient du dossier de données.
