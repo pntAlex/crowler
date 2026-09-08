@@ -31,6 +31,8 @@ export type Meta = {
   broken: number;
   /** Fichiers sitemap lus, et ceux qui ne l'ont pas été. */
   sitemap: SitemapInfo;
+  /** Preset déclencheur, quand l'audit vient d'un webhook plutôt que de l'interface. */
+  preset?: string;
 };
 
 const dir = (id: string) => join(ROOT, id);
@@ -44,10 +46,12 @@ export function hostOf(url: string, fallback: string): string {
   }
 }
 
-export function metaOf(c: Crawl): Meta {
+export function metaOf(c: Crawl, preset?: string): Meta {
   let broken = 0;
   for (const r of c.rows.values()) if (isBroken(r)) broken++;
   return {
+    // La clé reste absente sans preset : les meta.json déjà écrits restent valides.
+    ...(preset ? { preset } : {}),
     id: c.id,
     start: c.start,
     host: hostOf(c.start, c.id),
@@ -69,13 +73,13 @@ async function writeAtomic(path: string, body: string) {
 }
 
 /** Inscrit l'audit dès son démarrage : il apparaît dans l'historique pendant qu'il tourne. */
-export async function begin(c: Crawl): Promise<void> {
+export async function begin(c: Crawl, preset?: string): Promise<void> {
   await mkdir(dir(c.id), { recursive: true });
-  await writeAtomic(join(dir(c.id), "meta.json"), JSON.stringify(metaOf(c)));
+  await writeAtomic(join(dir(c.id), "meta.json"), JSON.stringify(metaOf(c, preset)));
 }
 
 /** Fige l'audit terminé : les lignes d'abord, l'entête ensuite. */
-export async function save(c: Crawl): Promise<void> {
+export async function save(c: Crawl, preset?: string): Promise<void> {
   const d = dir(c.id);
   await mkdir(d, { recursive: true });
 
@@ -92,7 +96,7 @@ export async function save(c: Crawl): Promise<void> {
 
   // rows.jsonl est en place avant meta.json : un `finishedAt` non nul garantit
   // donc que les lignes sont lisibles.
-  await writeAtomic(join(d, "meta.json"), JSON.stringify(metaOf(c)));
+  await writeAtomic(join(d, "meta.json"), JSON.stringify(metaOf(c, preset)));
 }
 
 export async function read(id: string): Promise<Meta | null> {

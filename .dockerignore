@@ -5,7 +5,7 @@ node_modules
 *.csv
 crowler
 data
-crawler.test.ts
+*.test.ts
 fixture.ts
 README.md
 Dockerfile

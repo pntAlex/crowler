@@ -43,6 +43,7 @@ vide. Image de 132 Mo, environ 60 Mo de RAM en usage.
 | `BLOCK_PRIVATE_IPS` | `1` dans l'image | refuse les cibles sur réseau privé |
 | `DATA_DIR` | `./data`, `/app/data` dans l'image | où sont stockés les audits |
 | `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
+| `WEBHOOK_MIN_INTERVAL` | 60 | secondes minimum entre deux déclenchements d'un même preset |
 
 Une variante binaire unique est disponible si l'empreinte de l'image compte :
 `bun run compile` produit un exécutable autonome déployable sur `scratch` ou `distroless`.
@@ -131,6 +132,66 @@ posé avant : un `finishedAt` non nul garantit donc que les lignes sont complèt
 laissé à `0` est un crawl que l'arrêt du serveur a coupé ; il est affiché « interrompu ».
 
 Le dossier `data/` est ignoré par git et par le build Docker.
+
+## Presets
+
+Un preset, c'est la cible et ses réglages enregistrés sous un nom. Il sert à deux choses :
+relancer le même audit sans le reconfigurer, et le déclencher de l'extérieur par webhook.
+
+Sous « Réglages », en bas : entrez un nom et cliquez **Enregistrer**. Le preset reprend l'URL du
+formulaire et l'ensemble des réglages affichés au moment de l'enregistrement. Le sélecteur à
+gauche recharge un preset dans le formulaire, prêt à lancer ou à modifier.
+
+À la **création**, un jeton est affiché avec la commande `curl` prête à coller dans un pipeline.
+Il n'est montré qu'une fois : seule son empreinte SHA-256 est conservée, il est impossible de le
+retrouver ensuite. Perdu, il se remplace avec **Régénérer le jeton** — l'ancien cesse
+immédiatement de fonctionner.
+
+Réenregistrer un preset existant met à jour sa cible et ses réglages **sans toucher au jeton** :
+les webhooks déjà en place chez l'appelant continuent de marcher. Supprimer le preset invalide
+son jeton.
+
+Les presets vivent dans un seul fichier, `presets.json` sous `DATA_DIR`, à côté des dossiers
+d'audit. Maximum 25.
+
+## Webhook
+
+Un appel suffit à lancer l'audit d'un preset — typiquement depuis la CI, après un déploiement :
+
+```bash
+curl -X POST https://crowler.exemple.fr/api/hooks/run \
+  -H "Authorization: Bearer $CROWLER_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"preset":"prod"}'
+```
+
+Le corps ne porte **que** le nom du preset. Ni l'URL ni les réglages ne sont surchargeables :
+tout ce qui sera crawlé a été décidé dans l'interface, donc un jeton qui fuite ne permet pas de
+viser un autre site. Le jeton se lit dans l'en-tête `Authorization` et nulle part ailleurs —
+en query string il finirait dans les logs d'accès du proxy et dans l'historique du navigateur.
+
+L'audit démarré est un audit comme les autres : il apparaît dans la barre de gauche, marqué du
+nom de son preset, se suit en direct et s'exporte en CSV.
+
+| Réponse | Signification |
+|---|---|
+| `200` `{"started":true,"id":"…"}` | crawl démarré ; `id` est celui de l'audit |
+| `200` `{"started":false,"id":"…"}` | le crawl précédent de ce preset tourne encore, `id` est le sien |
+| `401` `jeton ou preset invalide` | jeton faux, absent, ou preset inconnu — même message dans les trois cas |
+| `429` + `Retry-After` | preset déclenché il y a moins de `WEBHOOK_MIN_INTERVAL` secondes |
+| `403` / `400` | la cible du preset ne passe plus les gardes (réseau privé, URL ou motif invalide) |
+
+Les deux réponses `200` rendent l'appel **idempotent** : une CI qui rejoue son étape ne lance pas
+un second crawl. Exemple d'étape GitHub Actions, le jeton en secret de dépôt :
+
+```yaml
+- name: Auditer les liens après déploiement
+  run: |
+    curl -fsS -X POST https://crowler.exemple.fr/api/hooks/run \
+      -H "Authorization: Bearer ${{ secrets.CROWLER_TOKEN }}" \
+      -H "content-type: application/json" \
+      -d '{"preset":"prod"}'
+```
 
 ## Pendant le crawl
 
@@ -303,6 +364,23 @@ Cette garde travaille sur le nom d'hôte, pas sur l'IP résolue : elle n'arrête
 public qui résout volontairement vers une adresse privée (DNS rebinding). Ne pas exposer une
 instance avec `BLOCK_PRIVATE_IPS=0` sur un réseau non maîtrisé.
 
+Un preset est revalidé par ces mêmes gardes **à chaque déclenchement**, pas seulement à son
+enregistrement : une cible acceptée hier peut avoir cessé de l'être.
+
+**Seul `/api/hooks/run` est conçu pour être exposé.** Le reste de l'API — dont la création et la
+suppression de presets — n'est pas authentifié, comme l'interface elle-même. Ce n'est pas une
+asymétrie oubliée : qui atteint `/api/crawl` peut déjà lancer le crawl de son choix, donc lui
+laisser émettre un jeton ne lui donne aucun pouvoir de plus. L'instance doit rester derrière un
+réseau de confiance ou un reverse-proxy qui l'authentifie, en n'ouvrant que `/api/hooks/run`
+sur l'extérieur.
+
+Les jetons de webhook font 256 bits tirés au hasard et ne sont stockés que par leur empreinte
+SHA-256 : le fichier `presets.json` ne permet pas de reconstituer un jeton. La comparaison est
+à temps constant, et un preset inconnu coûte le même travail qu'un mauvais jeton — la durée de
+la réponse ne révèle pas quels presets existent. Un plafond d'échecs d'authentification par IP
+freine l'énumération de noms ; il ne prétend pas protéger le jeton lui-même, 256 bits n'en
+demandent pas.
+
 ## Limites connues
 
 - Les liens créés par JavaScript après le chargement ne sont pas vus : le crawler lit le HTML
@@ -322,8 +400,11 @@ instance avec `BLOCK_PRIVATE_IPS=0` sur un réseau non maîtrisé.
 bun test
 ```
 
-38 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+63 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
 absence de boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
 pages, `robots.txt`, garde SSRF, normalisation d'URL, extraction SEO — plafonds, fusion de
 `X-Robots-Tag`, canonique mise en file sans referer —, forme des deux CSV, aller-retour d'un
-audit par le disque et refus des identifiants qui sortiraient du dossier de données.
+audit par le disque et refus des identifiants qui sortiraient du dossier de données. Côté
+presets : jeton absent du fichier enregistré, rotation qui invalide l'ancien, mise à jour qui
+préserve le jeton, noms hors format refusés, plafond, et cohabitation de `presets.json` avec
+l'historique des audits.

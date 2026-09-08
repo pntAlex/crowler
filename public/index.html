@@ -136,7 +136,7 @@ details.cfg[open] summary::after{content:"–"}
 }
 .f{display:flex;flex-direction:column;gap:5px;min-width:0}
 .f > span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
-.f input[type=number]{background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:100%}
+.f input[type=number],.f input[type=text]{background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:100%}
 .f textarea{
   background:transparent;border:1px solid var(--line);border-radius:5px;padding:7px 9px;
   width:100%;resize:vertical;min-height:62px;line-height:1.45;font-size:12.5px;
@@ -151,6 +151,32 @@ details.cfg[open] summary::after{content:"–"}
 .sw input:checked::after{translate:13px 0}
 .sw input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .sw:hover{color:var(--ink)}
+
+/* ---- presets ---- */
+.preset-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.preset-row select,.preset-row input[type=text]{
+  background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:auto;
+}
+.preset-row select{min-width:152px}
+.preset-row input[type=text]{flex:1;min-width:132px}
+.preset-msg{margin:3px 0 0;font-family:var(--sans);font-size:11.5px;line-height:1.5;color:var(--ink-3)}
+.preset-msg.err{color:var(--s4)}
+.preset-key{
+  margin-top:5px;padding:11px 13px;border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:5px;background:var(--paper);display:flex;flex-direction:column;gap:8px;align-items:flex-start;
+}
+/* display:flex l'emporterait sur le display:none implicite de [hidden]. */
+.preset-key[hidden]{display:none}
+.preset-key b{font-size:11.5px;font-weight:600;color:var(--ink)}
+.preset-key textarea{
+  width:100%;background:var(--card);border:1px solid var(--line);border-radius:5px;
+  padding:8px 9px;font-size:11.5px;line-height:1.55;resize:vertical;min-height:76px;
+}
+.ses-tag{
+  font-style:normal;display:inline-block;margin-right:5px;padding:0 4px;border-radius:3px;
+  background:var(--line-soft);box-shadow:inset 0 0 0 1px var(--line);
+  color:var(--ink-3);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;
+}
 
 /* ---- SIGNATURE: status spectrum ---- */
 .meter{margin:22px 0 0}
@@ -403,6 +429,23 @@ td.dim{color:var(--ink-3)}
         <input id="sitemapUrl" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
           placeholder="https://exemple.fr/sitemap_index.xml">
       </label>
+      <div class="f" style="grid-column:1/-1">
+        <span>Preset <em>— la cible et ces réglages, enregistrés sous un nom et déclenchables par webhook</em></span>
+        <div class="preset-row">
+          <select id="preset-sel" aria-label="Charger un preset"><option value="">— aucun —</option></select>
+          <input id="preset-name" type="text" maxlength="32" placeholder="nom du preset"
+            spellcheck="false" autocapitalize="off" aria-label="Nom du preset">
+          <button class="mini" id="preset-save" type="button">Enregistrer</button>
+          <button class="mini" id="preset-token" type="button" disabled>Régénérer le jeton</button>
+          <button class="mini" id="preset-del" type="button" disabled>Supprimer</button>
+        </div>
+        <p class="preset-msg" id="preset-msg" hidden></p>
+        <div class="preset-key" id="preset-key" hidden>
+          <b>Jeton créé — copiez-le maintenant, il ne sera plus affiché.</b>
+          <textarea id="preset-curl" rows="4" readonly spellcheck="false" aria-label="Commande de déclenchement"></textarea>
+          <button class="mini" id="preset-copy" type="button">Copier</button>
+        </div>
+      </div>
     </div>
   </details>
 
@@ -494,11 +537,7 @@ const label = (r) =>
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (es) return; // a crawl is already running
-  const opts = {};
-  for (const k of BOOLS) opts[k] = $(k).checked;
-  for (const k of NUMS) opts[k] = Number($(k).value);
-  for (const k of STRS) opts[k] = $(k).value.trim();
-  opts.exclude = $("exclude").value.split("\n").map((t) => t.trim()).filter(Boolean);
+  const opts = readOpts();
   askNotify();
 
   reset();
@@ -527,6 +566,17 @@ $("form").addEventListener("submit", async (e) => {
     render();
   }
 });
+
+/** Les réglages du formulaire, dans la forme attendue par l'API. Partagé par le
+    lancement et par l'enregistrement d'un preset, pour qu'ils ne divergent pas. */
+function readOpts() {
+  const opts = {};
+  for (const k of BOOLS) opts[k] = $(k).checked;
+  for (const k of NUMS) opts[k] = Number($(k).value);
+  for (const k of STRS) opts[k] = $(k).value.trim();
+  opts.exclude = $("exclude").value.split("\n").map((t) => t.trim()).filter(Boolean);
+  return opts;
+}
 
 /** Swaps the launch row into its running state. */
 function busy(on) {
@@ -597,7 +647,7 @@ function renderSide() {
       `<button class="ses" type="button" data-id="${esc(m.id)}" aria-current="${m.id === id}">` +
         `<span class="ses-top"><i class="dot" data-s="${state(m)}"></i>` +
         `<span class="ses-host">${esc(m.host)}</span></span>` +
-        `<span class="ses-sub">${esc(summary(m))}</span>` +
+        `<span class="ses-sub">${m.preset ? `<i class="ses-tag">${esc(m.preset)}</i>` : ""}${esc(summary(m))}</span>` +
         `<span class="ses-when">${esc(WHEN.format(new Date(m.startedAt)))}</span>` +
       `</button>` +
       `<button class="ses-x" type="button" data-del="${esc(m.id)}" title="Supprimer cet audit" aria-label="Supprimer cet audit">×</button>` +
@@ -619,6 +669,131 @@ async function drop(sid) {
   if (sid === id) blank();
   await loadSessions();
 }
+
+/* ---- presets ----
+   Un preset porte la cible et ses réglages sous un nom. Il se recharge dans le
+   formulaire d'un clic, et se déclenche de l'extérieur avec son jeton. */
+let presetList = [];
+
+async function loadPresets() {
+  try {
+    presetList = await (await fetch("/api/presets")).json();
+  } catch {
+    return; // le serveur répondra au prochain rafraîchissement
+  }
+  renderPresets();
+}
+
+function renderPresets() {
+  const sel = $("preset-sel");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— aucun —</option>' +
+    presetList.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+  sel.value = presetList.some((p) => p.name === cur) ? cur : "";
+  presetTools();
+}
+
+/** Rotation et suppression ne visent que le preset sélectionné. */
+function presetTools() {
+  const on = !!$("preset-sel").value;
+  $("preset-token").disabled = !on;
+  $("preset-del").disabled = !on;
+}
+
+function presetMsg(text, err) {
+  const el = $("preset-msg");
+  el.hidden = !text;
+  el.className = "preset-msg" + (err ? " err" : "");
+  el.textContent = text || "";
+}
+
+/* Le jeton n'est montré qu'une fois, et nulle part ailleurs : ni dans l'URL,
+   ni dans un attribut, ni dans le stockage du navigateur. */
+function showToken(name, token) {
+  $("preset-curl").value =
+    `curl -X POST ${location.origin}/api/hooks/run \\\n` +
+    `  -H "Authorization: Bearer ${token}" \\\n` +
+    `  -H "content-type: application/json" \\\n` +
+    `  -d '{"preset":"${name}"}'`;
+  $("preset-key").hidden = false;
+}
+
+function hideToken() {
+  $("preset-key").hidden = true;
+  $("preset-curl").value = "";
+}
+
+$("preset-sel").addEventListener("change", () => {
+  hideToken();
+  presetMsg("");
+  presetTools();
+  const p = presetList.find((x) => x.name === $("preset-sel").value);
+  if (!p) return;
+  $("preset-name").value = p.name;
+  applyOpts({ start: p.url, opts: p.opts }); // le formulaire porte le preset, prêt à lancer
+});
+
+$("preset-save").addEventListener("click", async () => {
+  const name = ($("preset-name").value.trim() || $("preset-sel").value).trim();
+  if (!name) return presetMsg("Donnez un nom au preset.", true);
+  hideToken();
+  try {
+    const res = await fetch("/api/presets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, url: $("url").value.trim(), opts: readOpts() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "enregistrement impossible");
+    await loadPresets();
+    $("preset-sel").value = name;
+    presetTools();
+    presetMsg(data.token
+      ? `Preset « ${name} » créé.`
+      : `Preset « ${name} » mis à jour. Son jeton reste valable.`);
+    if (data.token) showToken(name, data.token);
+  } catch (err) {
+    presetMsg(err.message, true);
+  }
+});
+
+$("preset-token").addEventListener("click", async () => {
+  const name = $("preset-sel").value;
+  if (!name) return;
+  if (!confirm(`Régénérer le jeton de « ${name} » ? L’ancien cessera immédiatement de fonctionner.`)) return;
+  try {
+    const res = await fetch(`/api/presets/${encodeURIComponent(name)}/token`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "rotation impossible");
+    presetMsg(`Nouveau jeton pour « ${name} ». L’ancien ne fonctionne plus.`);
+    showToken(name, data.token);
+  } catch (err) {
+    presetMsg(err.message, true);
+  }
+});
+
+$("preset-del").addEventListener("click", async () => {
+  const name = $("preset-sel").value;
+  if (!name) return;
+  if (!confirm(`Supprimer le preset « ${name} » ? Son jeton cessera de fonctionner.`)) return;
+  await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: "DELETE" }).catch(() => {});
+  hideToken();
+  $("preset-sel").value = "";
+  $("preset-name").value = "";
+  await loadPresets();
+  presetMsg(`Preset « ${name} » supprimé.`);
+});
+
+$("preset-copy").addEventListener("click", async () => {
+  const t = $("preset-curl");
+  try {
+    await navigator.clipboard.writeText(t.value);
+    presetMsg("Commande copiée.");
+  } catch {
+    t.select(); // clipboard refusé (hors HTTPS, ou permission) : à copier à la main
+    presetMsg("Copiez la commande sélectionnée.");
+  }
+});
 
 /** Charge un audit : reprise en direct s'il tourne encore, relecture sinon. */
 async function show(sid) {
@@ -1213,6 +1388,7 @@ $("url").addEventListener("keydown", (e) => {
    Au chargement on reprend l'audit en cours s'il y en a un, sinon le dernier
    enregistré : un rafraîchissement de page ne perd plus rien. */
 (async () => {
+  loadPresets();
   await loadSessions();
   const pick = sessions.find(live) || sessions[0];
   if (pick) await show(pick.id);
