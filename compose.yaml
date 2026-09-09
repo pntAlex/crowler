@@ -47,5 +47,11 @@ services:
       caddy: $DOMAINS
       caddy.reverse_proxy: "{{ upstreams 3000 }}"
 
+networks:
+  default:
+    name: ${NETWORK_NAME:-}
+    external: ${NETWORK_EXTERNAL:-false}
+
+
 volumes:
   crowler-data:
