@@ -43,5 +43,9 @@ services:
     # tout de suite au lieu d'attendre le délai de grâce.
     init: true
 
+    labels:
+      caddy: $DOMAINS
+      caddy.reverse_proxy: "{{ upstreams 3000 }}"
+
 volumes:
   crowler-data:
