@@ -4,3 +4,4 @@ node_modules
 crowler
 data/
 .env
+CLAUDE.local.md
