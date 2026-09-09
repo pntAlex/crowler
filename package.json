@@ -1,8 +1,8 @@
 {
   "name": "crowler",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "Crawler d'audit de liens, sans aucune dependance",
+  "description": "Crawler d'audit de liens, sans aucune dépendance",
   "type": "module",
   "scripts": {
     "start": "bun server.ts",

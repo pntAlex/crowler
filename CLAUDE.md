@@ -56,6 +56,10 @@ laisser diverger.
   « corrigé » plus tard.
 - Les messages destinés à l'utilisateur — erreurs d'API, textes de l'interface — sont en
   français eux aussi.
+- **Le français s'écrit accentué, partout.** Commentaires, messages, README, `compose.yaml`,
+  `Dockerfile`, données de test : « réglable », pas « reglable ». Un accent oublié n'est pas
+  une coquille anodine, il rend le texte étranger au reste du fichier. Les identifiants du
+  code — noms de variables, de fonctions, clés JSON — restent eux sans accent.
 
 ## Tests
 

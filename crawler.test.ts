@@ -41,7 +41,7 @@ const site: Record<string, { body?: string; status?: number; type?: string; loc?
   "/deep3": { body: "fond" },
   "/base": { body: `<html><head><base href="/sub/"></head><body><a href="x.html">relatif</a></body></html>` },
   "/sub/x.html": { body: "ok" },
-  "/doc.pdf": { type: "application/pdf", body: `<a href="/piege">ne doit pas etre suivi</a>` },
+  "/doc.pdf": { type: "application/pdf", body: `<a href="/piege">ne doit pas être suivi</a>` },
   "/style.css": { type: "text/css", body: "body{}" },
   "/seo": {
     body: `<!doctype html><html lang="fr-FR"><head>
@@ -102,7 +102,7 @@ const site: Record<string, { body?: string; status?: number; type?: string; loc?
   "/aussi-listee": { body: "listee et liee" },
   "/entite": { body: "entite decodee" },
   "/cdata": { body: "cdata deballe" },
-  "/exclue-du-sitemap": { body: "ne doit jamais etre requetee" },
+  "/exclue-du-sitemap": { body: "ne doit jamais être requêtée" },
   "/espace-prive": { body: "interdite par robots.txt" },
   "/du-gz": { body: "venu du sitemap compresse" },
 };
@@ -137,7 +137,7 @@ beforeAll(() => {
   });
   ext = Bun.serve({
     port: 0,
-    fetch: () => new Response(`<a href="/interne-au-partenaire">ne doit pas etre crawlé</a>`, {
+    fetch: () => new Response(`<a href="/interne-au-partenaire">ne doit pas être crawlé</a>`, {
       headers: { "content-type": "text/html" },
     }),
   });

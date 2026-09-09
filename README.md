@@ -31,19 +31,39 @@ l'auditer : `BLOCK_PRIVATE_IPS=0 bun server.ts`.
 ## Docker
 
 ```bash
+docker compose up -d
+```
+
+C'est tout : `compose.yaml` construit l'image depuis le dépôt, aucun registre n'est nécessaire.
+Le service répond sur <http://localhost:3000> et le volume `crowler-data` porte l'historique des
+audits — sans lui, recréer le conteneur repart d'une ardoise vide. Image de 132 Mo, environ
+60 Mo de RAM en usage.
+
+Le conteneur tourne sans privilège : utilisateur non-root, système de fichiers en lecture seule
+hormis `/app/data`, toutes les capacités retirées et `no-new-privileges`. Le sondage `/health`
+est déclaré dans le `Dockerfile`, donc un gestionnaire de stacks affiche l'état réel du service
+sans configuration supplémentaire.
+
+Sans Compose, l'équivalent tient en une ligne :
+
+```bash
 docker build -t crowler . && docker run -p 3000:3000 -v crowler-data:/app/data crowler
 ```
 
-Le volume porte l'historique des audits : sans lui, recréer le conteneur repart d'une ardoise
-vide. Image de 132 Mo, environ 60 Mo de RAM en usage.
+### Réglages de la stack
+
+Copiez `.env.example` en `.env` : `docker compose` le lit tout seul.
 
 | Variable | Défaut | Effet |
 |---|---|---|
-| `PORT` | 3000 | port d'écoute |
-| `BLOCK_PRIVATE_IPS` | `1` dans l'image | refuse les cibles sur réseau privé |
-| `DATA_DIR` | `./data`, `/app/data` dans l'image | où sont stockés les audits |
+| `CROWLER_PORT` | 3000 | port publié sur l'hôte ; le conteneur écoute toujours sur 3000 |
+| `BLOCK_PRIVATE_IPS` | `1` | refuse les cibles sur réseau privé |
 | `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
 | `WEBHOOK_MIN_INTERVAL` | 60 | secondes minimum entre deux déclenchements d'un même preset |
+
+Deux variables ne se règlent que dans l'image, parce que la stack en dépend : `PORT`, fixé à
+3000 face à la publication ci-dessus, et `DATA_DIR`, fixé à `/app/data` face au volume. Hors
+conteneur, elles valent `3000` et `./data`.
 
 Une variante binaire unique est disponible si l'empreinte de l'image compte :
 `bun run compile` produit un exécutable autonome déployable sur `scratch` ou `distroless`.

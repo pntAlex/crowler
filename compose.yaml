@@ -1,0 +1,47 @@
+# Stack Compose de crowler. `docker compose up -d` suffit : l'image est
+# construite depuis ce dépôt, aucun registre n'est nécessaire.
+name: crowler
+
+services:
+  crowler:
+    build:
+      context: .
+    image: crowler:1.0.0
+    container_name: crowler
+    restart: unless-stopped
+
+    # Le service écoute toujours sur 3000 dans le conteneur ; seule la
+    # publication change. `.env` n'est volontairement pas monté via `env_file` :
+    # un PORT qui y traîne casserait la correspondance ci-dessous.
+    ports:
+      - "${CROWLER_PORT:-3000}:3000"
+
+    environment:
+      PORT: 3000
+      # Une instance atteignable ne doit pas devenir un scanner du réseau qui
+      # l'héberge : la garde reste active sauf demande explicite.
+      BLOCK_PRIVATE_IPS: ${BLOCK_PRIVATE_IPS:-1}
+      MAX_SESSIONS: ${MAX_SESSIONS:-50}
+      WEBHOOK_MIN_INTERVAL: ${WEBHOOK_MIN_INTERVAL:-60}
+
+    # L'historique des audits : sans ce volume, recréer le conteneur repart
+    # d'une ardoise vide.
+    volumes:
+      - crowler-data:/app/data
+
+    # Le sondage de santé est déclaré dans le Dockerfile et hérité ici.
+
+    # Le processus n'écrit que dans DATA_DIR : le reste du système de fichiers
+    # peut rester en lecture seule, et aucune capacité n'est nécessaire.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # PID 1 qui relaie les signaux : `compose down` arrête le crawl en cours
+    # tout de suite au lieu d'attendre le délai de grâce.
+    init: true
+
+volumes:
+  crowler-data:

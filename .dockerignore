@@ -10,3 +10,10 @@ fixture.ts
 README.md
 Dockerfile
 .dockerignore
+compose.yaml
+.env
+.env.example
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.DS_Store
