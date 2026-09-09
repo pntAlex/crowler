@@ -48,12 +48,28 @@ body{
   font-size:11.5px;letter-spacing:.03em;color:var(--ink-2);background:var(--paper);
 }
 .new:hover{color:var(--ink);border-color:var(--ink-3)}
-.side-t{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:2px 16px 6px}
+.side-t{
+  display:flex;align-items:center;gap:8px;min-height:22px;
+  font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:2px 16px 6px;
+}
+.side-t span{flex:1;min-width:0}
+.ses-del{
+  border:1px solid var(--line);border-radius:4px;height:22px;padding:0 7px;flex:none;
+  font-size:10.5px;letter-spacing:.03em;text-transform:none;color:var(--s4);background:var(--paper);
+}
+.ses-del:hover{border-color:var(--s4);background:var(--s4-bg)}
 .side-list{flex:1;overflow-y:auto;padding:0 8px 14px;display:grid;gap:2px;align-content:start}
-.ses-w{position:relative;min-width:0}
+.ses-w{position:relative;min-width:0;display:flex;align-items:flex-start;gap:5px}
 .side-empty{margin:0;padding:10px 8px;color:var(--ink-3);font-size:11.5px;line-height:1.6;font-family:var(--sans)}
+/* La case garde sa place même invisible : cocher ne décale pas la liste. */
+.ses-c{
+  flex:none;width:13px;height:13px;margin:11px 0 0 4px;accent-color:var(--accent);
+  cursor:pointer;opacity:0;
+}
+.ses-w:hover .ses-c,.ses-c:focus-visible,.ses-c:checked,.side-list.picking .ses-c{opacity:1}
+.ses-c:disabled{cursor:not-allowed}
 .ses{
-  display:block;width:100%;text-align:left;padding:8px 9px 9px;border-radius:6px;
+  flex:1;min-width:0;display:block;text-align:left;padding:8px 9px 9px;border-radius:6px;
   border:1px solid transparent;cursor:pointer;
 }
 .ses:hover{background:var(--line-soft)}
@@ -384,7 +400,10 @@ td.dim{color:var(--ink-3)}
       <div class="mark"><i></i><b>crowler</b></div>
       <button class="new" id="new" type="button">Nouvel audit</button>
     </div>
-    <p class="side-t">Historique</p>
+    <div class="side-t">
+      <span>Historique</span>
+      <button class="ses-del" id="ses-del" type="button" hidden>Supprimer</button>
+    </div>
     <div class="side-list" id="side-list"></div>
   </aside>
 
@@ -503,6 +522,7 @@ const WHEN = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", 
 
 const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?,seo?}
 let sessions = [];           // en-têtes d'audits, du plus récent au plus ancien
+const picked = new Set();    // audits cochés dans l'historique, pour une suppression groupée
 let stats = null, id = null, es = null, target = "";
 let view = "broken", filter = null, query = "", sortKey = "s", sortDir = -1;
 let smInfo = null;   // fichiers sitemap lus par l'audit affiché, et leurs erreurs
@@ -638,12 +658,17 @@ async function loadSessions() {
 
 function renderSide() {
   const box = $("side-list");
+  // Un audit élagué par le serveur ne doit pas rester coché : la sélection ne
+  // contient que des identifiants encore présents dans l'historique.
+  for (const sid of picked) if (!sessions.some((m) => m.id === sid)) picked.delete(sid);
   if (!sessions.length) {
     box.innerHTML = '<p class="side-empty">Aucun audit enregistré pour l’instant. Le premier apparaîtra ici et y restera après un redémarrage.</p>';
-    return;
+    return sesTools();
   }
   box.innerHTML = sessions.map((m) =>
     `<div class="ses-w">` +
+      `<input class="ses-c" type="checkbox" data-pick="${esc(m.id)}"${picked.has(m.id) ? " checked" : ""}` +
+        `${live(m) ? " disabled" : ""} title="Sélectionner cet audit" aria-label="Sélectionner cet audit">` +
       `<button class="ses" type="button" data-id="${esc(m.id)}" aria-current="${m.id === id}">` +
         `<span class="ses-top"><i class="dot" data-s="${state(m)}"></i>` +
         `<span class="ses-host">${esc(m.host)}</span></span>` +
@@ -652,6 +677,18 @@ function renderSide() {
       `</button>` +
       `<button class="ses-x" type="button" data-del="${esc(m.id)}" title="Supprimer cet audit" aria-label="Supprimer cet audit">×</button>` +
     `</div>`).join("");
+  sesTools();
+}
+
+/** La suppression groupée ne vise que les audits cochés. */
+function sesTools() {
+  const n = picked.size;
+  // La classe garde les cases visibles hors survol pendant qu'une sélection est en cours.
+  $("side-list").classList.toggle("picking", n > 0);
+  const b = $("ses-del");
+  b.hidden = n === 0;
+  b.textContent = `Supprimer (${n})`;
+  b.setAttribute("aria-label", `Supprimer ${n} audit${n === 1 ? "" : "s"} sélectionné${n === 1 ? "" : "s"}`);
 }
 
 $("side-list").addEventListener("click", (e) => {
@@ -661,13 +698,46 @@ $("side-list").addEventListener("click", (e) => {
   if (b && b.dataset.id !== id) show(b.dataset.id);
 });
 
+$("side-list").addEventListener("change", (e) => {
+  const c = e.target.closest("[data-pick]");
+  if (!c) return;
+  if (c.checked) picked.add(c.dataset.pick);
+  else picked.delete(c.dataset.pick);
+  sesTools();
+});
+
+$("ses-del").addEventListener("click", dropMany);
+
 async function drop(sid) {
   const m = sessions.find((x) => x.id === sid);
   if (m && live(m)) return alert("Cet audit est en cours : arrêtez-le avant de le supprimer.");
   if (!confirm("Supprimer cet audit et ses résultats ?")) return;
   await fetch(`/api/crawl/${sid}`, { method: "DELETE" }).catch(() => {});
+  picked.delete(sid);
   if (sid === id) blank();
   await loadSessions();
+}
+
+/**
+ * Suppression des audits cochés. Les requêtes partent ensemble et restent
+ * indépendantes côté serveur : un échec isolé laisse son audit coché, prêt pour
+ * un nouvel essai, sans annuler les autres.
+ */
+async function dropMany() {
+  const ids = sessions.filter((m) => picked.has(m.id) && !live(m)).map((m) => m.id);
+  if (!ids.length) return;
+  const ask = ids.length === 1
+    ? "Supprimer cet audit et ses résultats ?"
+    : `Supprimer ${ids.length} audits et leurs résultats ?`;
+  if (!confirm(ask)) return;
+  const done = await Promise.all(ids.map((sid) =>
+    fetch(`/api/crawl/${sid}`, { method: "DELETE" }).then((r) => r.ok, () => false)));
+  ids.forEach((sid, i) => { if (done[i]) picked.delete(sid); });
+  const cur = ids.indexOf(id);
+  if (cur >= 0 && done[cur]) blank();
+  await loadSessions();
+  const failed = done.filter((ok) => !ok).length;
+  if (failed) alert(`${failed} audit${failed === 1 ? " n’a" : "s n’ont"} pas pu être supprimé${failed === 1 ? "" : "s"}.`);
 }
 
 /* ---- presets ----
