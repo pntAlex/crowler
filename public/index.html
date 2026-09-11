@@ -296,6 +296,7 @@ details.cfg[open] summary::after{content:"–"}
 .refs a{color:var(--ink-2);text-decoration:none;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}
 .refs a:hover{color:var(--accent);border-color:var(--accent)}
 .refs q{color:var(--ink-3);font-family:var(--sans);font-size:12px;quotes:"«\00a0" "\00a0»"}
+.refs small{color:var(--ink-3);font-size:12px;overflow-wrap:anywhere}
 .more{padding:9px 16px 15px 82px;color:var(--ink-3);font-size:11.5px}
 
 /* ---- synthesis charts ----
@@ -1133,7 +1134,8 @@ function brokenView(list, total) {
     const body = refs.length
       ? `<ul class="refs">` + refs.map((f) =>
           `<li>${linkable(f.from) ? `<a href="${esc(f.from)}" target="_blank" rel="noopener noreferrer nofollow">${esc(short(f.from))}</a>` : esc(f.from)}` +
-          (f.text ? ` <q>${esc(f.text)}</q>` : "") + `</li>`).join("")
+          (f.text ? ` <q>${esc(f.text)}</q>` : "") +
+          (f.via ? ` <small title="URL liée par la page, qui redirige vers l’URL cassée">via ${esc(short(f.via))}</small>` : "") + `</li>`).join("")
         + (r.n > refs.length ? `<li style="color:var(--ink-3)">et ${NUM.format(r.n - refs.length)} autres pages (voir liens-casses.csv)</li>` : "")
         + `</ul>`
       : "";

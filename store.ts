@@ -144,6 +144,18 @@ export async function* rows(id: string): AsyncGenerator<Row> {
   if (buf.trim()) yield JSON.parse(buf) as Row;
 }
 
+/**
+ * Les redirections d'un audit terminé, par URL : de quoi remonter d'un lien
+ * cassé jusqu'aux pages qui le portent (voir `referers`). Une passe de plus sur
+ * le fichier ; leur nombre est borné comme celui des lignes, par le plafond de
+ * pages du crawl.
+ */
+export async function hops(id: string): Promise<Map<string, Row>> {
+  const out = new Map<string, Row>();
+  for await (const r of rows(id)) if (r.redirect) out.set(r.url, r);
+  return out;
+}
+
 export async function remove(id: string): Promise<boolean> {
   if (!valid(id)) return false;
   try {

@@ -278,6 +278,13 @@ async function rowsOf(id: string): Promise<Iterable<Row> | AsyncIterable<Row> | 
   return m ? store.rows(id) : null;
 }
 
+/** Les redirections par lesquelles remonter les referers (voir `referers`) : la
+ *  table du crawl tant qu'il est en mémoire, une passe sur le disque ensuite. */
+async function hopsOf(id: string): Promise<ReadonlyMap<string, Row>> {
+  const j = jobs.get(id);
+  return j ? j.crawl.rows : store.hops(id);
+}
+
 // ---- server ----------------------------------------------------------------
 
 const server = Bun.serve({
@@ -329,12 +336,13 @@ const server = Bun.serve({
     "/api/crawl/:id/rows": async (req) => {
       const src = await rowsOf(req.params.id);
       if (!src) return bad("audit inconnu", 404);
+      const hops = await hopsOf(req.params.id);
       const enc = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         async start(c) {
           let buf = "";
           for await (const r of src) {
-            buf += JSON.stringify(wire(r)) + "\n";
+            buf += JSON.stringify(wire(r, hops)) + "\n";
             if (buf.length > 64 * 1024) {
               c.enqueue(enc.encode(buf));
               buf = "";
@@ -504,7 +512,8 @@ const server = Bun.serve({
     "/api/crawl/:id/broken.csv": async (req) => {
       const src = await rowsOf(req.params.id);
       if (!src) return bad("audit inconnu", 404);
-      return csvResponse(`liens-casses-${await host(req.params.id)}.csv`, BROKEN_HEADER, () => brokenRows(src));
+      const hops = await hopsOf(req.params.id);
+      return csvResponse(`liens-casses-${await host(req.params.id)}.csv`, BROKEN_HEADER, () => brokenRows(src, hops));
     },
   },
 

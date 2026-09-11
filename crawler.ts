@@ -15,7 +15,8 @@ const SEO_CAP = { title: 300, desc: 500, h1: 300, url: 2000, robots: 200, lang: 
 const SKIP_SCHEME = /^(mailto|tel|sms|javascript|data|blob|file|ftp|about|whatsapp|geo):/i;
 
 export type Kind = "page" | "asset" | "external";
-export type Ref = { from: string; text: string };
+/** `via` n'existe que sur un referer résolu (voir `referers`), jamais sur celui qu'on enregistre. */
+export type Ref = { from: string; text: string; via?: string };
 
 /**
  * On-page SEO signals of one HTML page. Strings are capped (SEO_CAP);
@@ -358,6 +359,7 @@ export class Crawl {
         if (isOrphan(seen)) this.orphans--; // gaining a referer ends orphanhood
         seen.refCount++;
         this.dirty.add(key);
+        if (seen.redirect) this.touchTargets(seen);
       }
       return seen;
     }
@@ -389,6 +391,23 @@ export class Crawl {
     }
     this.queue.push(row);
     return row;
+  }
+
+  /**
+   * Une cible de redirection montre les referers de l'URL qui y mène (voir
+   * `referers`) : quand celle-ci en gagne un, toute la chaîne repart vers
+   * l'interface, sinon une 404 déjà affichée garderait sa liste d'avant.
+   */
+  private touchTargets(row: Row) {
+    const seen = new Set<string>();
+    let r: Row | undefined = row;
+    while (r?.redirect) {
+      const key = normalize(new URL(r.redirect), this.opts.ignoreQuery);
+      if (seen.has(key)) return; // boucle de redirections
+      seen.add(key);
+      this.dirty.add(key);
+      r = this.rows.get(key);
+    }
   }
 
   /** Resolves one discovered href and queues it. `depth` is the depth to assign. */
@@ -683,7 +702,7 @@ export class Crawl {
   /** Full state for a client connecting mid-crawl (or after it ended). */
   snapshot(): unknown[] {
     const out: unknown[] = [];
-    for (const r of this.rows.values()) out.push(wire(r));
+    for (const r of this.rows.values()) out.push(wire(r, this.rows));
     return out;
   }
 
@@ -711,7 +730,7 @@ export class Crawl {
     const rows: unknown[] = [];
     for (const key of this.dirty) {
       const r = this.rows.get(key);
-      if (r) rows.push(wire(r));
+      if (r) rows.push(wire(r, this.rows));
     }
     this.dirty.clear();
     this.onEvent({ type: "batch", rows, stats: this.stats() });
@@ -729,8 +748,45 @@ const isHtml = (t: string) => t === "" || t === "text/html" || t === "applicatio
  *  sitemap itself. The start URL is exempt — it is how the crawl got in. */
 export const isOrphan = (r: Row) => !!r.inSitemap && r.refCount === 0 && !r.seed;
 
-/** Referers are only shipped for broken URLs — that is the only place the UI shows them. */
-export function wire(r: Row) {
+/**
+ * Les pages dont les liens mènent à `r`, et combien de liens y mènent. Une
+ * redirection n'est pas une page à corriger : quand un referer en est une, il
+ * cède la place aux referers de l'URL redirigée, de chaîne en chaîne, et `via`
+ * garde l'URL que la page lie réellement — celle qu'on y cherchera. Une
+ * redirection que rien ne lie (départ, sitemap) reste le referer : c'est la
+ * seule piste.
+ *
+ * `hops` donne les redirections : la table du crawl, ou celles relues du disque.
+ * `total` est exact tant que les redirections font partie des referers
+ * échantillonnés ; au-delà de REF_CAP, chacune compte pour un seul lien.
+ */
+export function referers(r: Row, hops: ReadonlyMap<string, Row>): { refs: Ref[]; total: number } {
+  const refs: Ref[] = [];
+  let total = 0;
+  // Chaque redirection n'est remontée qu'une fois : des lignes relues du disque
+  // ont pu être retouchées à la main, une boucle doit rester impossible.
+  const seen = new Set([r.url]);
+  const todo = [r];
+  for (let i = 0; i < todo.length; i++) {
+    const row = todo[i]!;
+    total += row.refCount - row.refs.length;
+    for (const ref of row.refs) {
+      const hop = hops.get(ref.from);
+      if (hop?.redirect && hop.refs.length && !seen.has(hop.url)) {
+        seen.add(hop.url);
+        todo.push(hop);
+        continue;
+      }
+      total++;
+      if (refs.length < REF_CAP) refs.push(row === r ? ref : { ...ref, via: row.url });
+    }
+  }
+  return { refs, total };
+}
+
+/** Les referers ne partent que pour les URLs cassées, seul endroit où l'interface
+ *  les montre, et ils partent résolus (voir `referers`) avec le compte qui va avec. */
+export function wire(r: Row, hops: ReadonlyMap<string, Row>) {
   const o: Record<string, unknown> = {
     u: r.url, s: r.status, k: r.kind, d: r.depth, m: r.ms, b: r.bytes,
     t: r.type, n: r.refCount,
@@ -740,7 +796,11 @@ export function wire(r: Row) {
   if (r.seo) o.seo = r.seo;
   if (r.inSitemap) o.sm = 1;
   if (isOrphan(r)) o.or = 1;
-  if (isBroken(r)) o.f = r.refs;
+  if (isBroken(r)) {
+    const { refs, total } = referers(r, hops);
+    o.f = refs;
+    o.n = total;
+  }
   return o;
 }
 

@@ -380,7 +380,12 @@ est testée mais pas explorée, comme n'importe quel lien externe.
 
 **`liens-casses-<domaine>.csv`** — une ligne par *occurrence* de lien cassé, c'est-à-dire une
 ligne par correction à faire :
-`target_url, status, error, referer, anchor_text, target_kind, total_referers, referers_listed`
+`target_url, status, error, referer, anchor_text, target_kind, total_referers, referers_listed, via_redirect`
+
+`referer` est toujours la page qui porte le lien, et `anchor_text` le texte de ce lien. Quand
+il passe par une ou plusieurs redirections avant d'aboutir à l'URL cassée, `via_redirect` donne
+l'URL qu'il lie réellement, celle qu'on cherchera dans la page ; la colonne reste vide pour un
+lien direct. Elle vient en dernier pour ne décaler aucune des colonnes existantes.
 
 `status` vide signifie que l'URL n'a jamais reçu de réponse ; la colonne `error` dit pourquoi
 (`timeout`, `robots`, `bad-url`, `private-host`, ou le message réseau).
@@ -403,6 +408,11 @@ Les referers sont collectés à l'unique endroit où une URL est mise en file, d
 et les referers ne peuvent pas diverger. Une même URL cassée liée depuis 500 pages conserve un
 échantillon de **20 referers** (`referers_listed`) mais un compteur exact
 (`total_referers`) — sans quoi une seule 404 populaire ferait exploser la mémoire.
+
+Une redirection n'est pas une page à corriger. Le crawl enregistre l'URL redirigée comme
+referer de sa cible — c'est ainsi qu'il l'a découverte —, mais l'export et l'écran remontent la
+chaîne jusqu'aux pages qui lient la redirection. Ce calcul se fait à la lecture, sur les lignes
+telles qu'enregistrées : un audit passé en profite sans être relancé.
 
 ## Sécurité
 
@@ -457,8 +467,9 @@ demandent pas.
 bun test
 ```
 
-78 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
-absence de boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
+82 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+referers remontés à travers les redirections jusqu'à la page qui porte le lien, absence de
+boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
 pages, `robots.txt`, garde SSRF, normalisation d'URL, extraction SEO — plafonds, fusion de
 `X-Robots-Tag`, canonique mise en file sans referer —, forme des deux CSV, aller-retour d'un
 audit par le disque et refus des identifiants qui sortiraient du dossier de données. Côté

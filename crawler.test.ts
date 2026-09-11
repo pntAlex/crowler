@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { compileExcludes, Crawl, isBroken, isOrphan, isPrivateHost, normalize, wire, type Row } from "./crawler";
-import { brokenRows, PAGES_HEADER, pagesRows } from "./report";
+import { compileExcludes, Crawl, isBroken, isOrphan, isPrivateHost, normalize, referers, wire, type Row } from "./crawler";
+import { BROKEN_HEADER, brokenRows, PAGES_HEADER, pagesRows } from "./report";
 import { collect } from "./sitemap";
 import { Robots } from "./robots";
 import { rm } from "node:fs/promises";
@@ -22,6 +22,7 @@ const site: Record<string, { body?: string; status?: number; type?: string; loc?
       <a href="/seo-entetes">seo par entete</a>
       <a href="/seo-long">seo verbeux</a>
       <a href="/seo-externe">canonique externe</a>
+      <a href="/rubrique/">rubrique</a>
       <a href="EXTORIGIN/">site partenaire</a>
       <img src="EXTORIGIN/pixel-externe.png">
       <a href="mailto:a@b.fr">écrire</a>
@@ -41,6 +42,12 @@ const site: Record<string, { body?: string; status?: number; type?: string; loc?
   "/deep3": { body: "fond" },
   "/base": { body: `<html><head><base href="/sub/"></head><body><a href="x.html">relatif</a></body></html>` },
   "/sub/x.html": { body: "ok" },
+  /* Le cas réel : une adresse e-mail en href sans `mailto:`, donc un chemin
+     relatif, que le serveur redirige vers sa forme à slash final — en 404. */
+  "/rubrique/": { body: `<a href="contact@exemple.fr">Nous écrire</a> <a href="suite">suite</a>` },
+  "/rubrique/contact@exemple.fr": { status: 308, loc: "/rubrique/contact@exemple.fr/" },
+  "/rubrique/suite": { body: `<a href="plus">plus</a>` },
+  "/rubrique/plus": { body: `<a href="contact@exemple.fr">Écrire aussi</a>` },
   "/doc.pdf": { type: "application/pdf", body: `<a href="/piege">ne doit pas être suivi</a>` },
   "/style.css": { type: "text/css", body: "body{}" },
   "/seo": {
@@ -280,11 +287,88 @@ test("checkAssets et checkExternal désactivés réduisent le périmètre", asyn
 
 test("broken.csv produit une ligne par couple (cible, referer)", async () => {
   const c = await crawl();
-  const rows = await Array.fromAsync(brokenRows(c.rows.values()));
+  const rows = await Array.fromAsync(brokenRows(c.rows.values(), c.rows));
   const miss = rows.filter((r) => r[0] === origin + "/missing");
   expect(miss.length).toBe(2);
   expect(miss.map((r) => r[3]).sort()).toEqual([origin + "/", origin + "/a"]);
+  expect(miss.every((r) => r[BROKEN_HEADER.indexOf("via_redirect")] === "")).toBe(true); // liens directs
   expect(rows.every((r) => r[1] !== 200)).toBe(true);
+});
+
+/* ---- referers à travers les redirections ---- */
+
+/** Ligne minimale, pour construire un graphe de liens à la main. */
+const row = (url: string, o: Partial<Row> = {}): Row => ({
+  url, kind: "page", asset: false, depth: 0, status: 200, ms: 0, bytes: 0, type: "", refs: [], refCount: 0, ...o,
+});
+
+test("un referer qui redirige cède la place aux pages qui lient la redirection", () => {
+  // /page lie /a1, qui redirige vers /a2, qui redirige vers /cible ; /directe lie /cible.
+  const a1 = row("/a1", { status: 301, redirect: "/a2", refs: [{ from: "/page", text: "Nous écrire" }], refCount: 1 });
+  const a2 = row("/a2", { status: 308, redirect: "/cible", refs: [{ from: "/a1", text: "" }], refCount: 1 });
+  // Une redirection que rien ne lie, venue du sitemap : faute de page, c'est elle qu'on montre.
+  const seule = row("/seule", { status: 301, redirect: "/cible" });
+  const cible = row("/cible", {
+    status: 404,
+    refs: [{ from: "/directe", text: "lien direct" }, { from: "/a2", text: "" }, { from: "/seule", text: "" }],
+    refCount: 3,
+  });
+  expect(referers(cible, new Map([a1, a2, seule].map((r) => [r.url, r])))).toEqual({
+    refs: [
+      { from: "/directe", text: "lien direct" },
+      { from: "/seule", text: "" },
+      { from: "/page", text: "Nous écrire", via: "/a1" }, // l'URL écrite dans /page
+    ],
+    total: 3,
+  });
+});
+
+test("referers : échantillon plafonné, compte exact, boucle impossible", () => {
+  // 30 pages lient la redirection, 20 seulement sont échantillonnées.
+  const listed = Array.from({ length: 20 }, (_, i) => ({ from: `/p${i}`, text: "" }));
+  const hop = row("/hop", { status: 301, redirect: "/cible", refs: listed, refCount: 30 });
+  const cible = row("/cible", { status: 404, refs: [{ from: "/directe", text: "" }, { from: "/hop", text: "" }], refCount: 2 });
+  const out = referers(cible, new Map([[hop.url, hop]]));
+  expect(out.refs.length).toBe(20);
+  expect(out.total).toBe(31); // le lien direct, plus les 30 qui passent par la redirection
+  // Des lignes retouchées à la main peuvent se citer en boucle : la résolution termine.
+  const x = row("/x", { status: 301, redirect: "/y", refs: [{ from: "/y", text: "" }], refCount: 1 });
+  const y = row("/y", { status: 301, redirect: "/x", refs: [{ from: "/x", text: "" }], refCount: 1 });
+  const z = row("/z", { status: 404, refs: [{ from: "/x", text: "" }], refCount: 1 });
+  expect(referers(z, new Map([x, y].map((r) => [r.url, r]))).total).toBe(1);
+});
+
+test("liens-casses.csv désigne la page qui porte le lien, pas la redirection qui y mène", async () => {
+  const c = await crawl();
+  const cible = origin + "/rubrique/contact@exemple.fr/";
+  const col = (name: string) => BROKEN_HEADER.indexOf(name);
+  const lines = (await Array.fromAsync(brokenRows(c.rows.values(), c.rows))).filter((r) => r[0] === cible);
+  expect(lines.map((r) => [r[col("referer")], r[col("anchor_text")], r[col("via_redirect")]]).sort()).toEqual([
+    [origin + "/rubrique/", "Nous écrire", origin + "/rubrique/contact@exemple.fr"],
+    [origin + "/rubrique/plus", "Écrire aussi", origin + "/rubrique/contact@exemple.fr"],
+  ]);
+  expect(lines.every((r) => r[col("total_referers")] === 2 && r[col("referers_listed")] === 2)).toBe(true);
+});
+
+test("l'interface reçoit le referer arrivé sur la redirection après l'envoi de sa cible", async () => {
+  const cible = origin + "/rubrique/contact@exemple.fr/";
+  const sent: Record<string, unknown>[] = [];
+  // Un seul worker, et un délai plus long que l'intervalle d'envoi (250 ms) : la 404
+  // part vers l'interface avant que /rubrique/plus ne lie à son tour la redirection.
+  const c = new Crawl(
+    origin + "/rubrique/",
+    { respectRobots: false, useSitemap: false, concurrency: 1, delayMs: 300, timeoutMs: 2500 },
+    (e) => {
+      if (e.type !== "batch") return;
+      for (const w of e.rows as Record<string, unknown>[]) if (w.u === cible && w.s === 404) sent.push(w);
+    },
+    false,
+  );
+  await c.run();
+  expect(sent[0]!.n).toBe(1);
+  const last = sent.at(-1)!;
+  expect(last.n).toBe(2);
+  expect((last.f as { from: string }[]).map((f) => f.from)).toEqual([origin + "/rubrique/", origin + "/rubrique/plus"]);
 });
 
 test("une URL encore en file n'est pas comptée comme cassée", () => {
@@ -447,8 +531,8 @@ test("collectSeo désactivé ne relève rien et ne met pas la canonique en file"
 
 test("wire n'ajoute la clé seo que si elle existe", async () => {
   const c = await crawl();
-  expect((wire(at(c, "/seo")!) as { seo?: unknown }).seo).toBeDefined();
-  expect((wire(at(c, "/style.css")!) as { seo?: unknown }).seo).toBeUndefined();
+  expect((wire(at(c, "/seo")!, c.rows) as { seo?: unknown }).seo).toBeDefined();
+  expect((wire(at(c, "/style.css")!, c.rows) as { seo?: unknown }).seo).toBeUndefined();
 });
 
 /* ---- sitemap ---- */
@@ -567,13 +651,13 @@ test("une URL du sitemap interdite par robots.txt est relevée, pas requêtée",
 
 test("wire expose l'appartenance au sitemap et l'orphelinat", async () => {
   const c = await withSitemap();
-  const orph = wire(at(c, "/orpheline")!) as Record<string, unknown>;
+  const orph = wire(at(c, "/orpheline")!, c.rows) as Record<string, unknown>;
   expect(orph.sm).toBe(1);
   expect(orph.or).toBe(1);
-  const liee = wire(at(c, "/aussi-listee")!) as Record<string, unknown>;
+  const liee = wire(at(c, "/aussi-listee")!, c.rows) as Record<string, unknown>;
   expect(liee.sm).toBe(1);
   expect(liee.or).toBeUndefined();
-  expect((wire(at(c, "/deep1")!) as Record<string, unknown>).sm).toBeUndefined();
+  expect((wire(at(c, "/deep1")!, c.rows) as Record<string, unknown>).sm).toBeUndefined();
 });
 
 test("pages.csv porte les colonnes sitemap", async () => {
@@ -666,10 +750,12 @@ test("un audit enregistré se relit à l'identique et s'exporte depuis le disque
     expect(missing.refs.map((f) => f.from).sort()).toEqual([origin + "/", origin + "/a"]);
     expect(back.find((r) => r.url === origin + "/seo")!.seo!.title).toBe("Titre de la page");
 
-    // Donc l'export d'un audit passé est identique à celui de l'audit en cours.
-    const fromDisk = await Array.fromAsync(brokenRows(store.rows(c.id)));
-    const fromMemory = await Array.fromAsync(brokenRows(c.rows.values()));
+    // Donc l'export d'un audit passé est identique à celui de l'audit en cours,
+    // redirections remontées comprises : relu du disque, l'audit n'en perd pas le fil.
+    const fromDisk = await Array.fromAsync(brokenRows(store.rows(c.id), await store.hops(c.id)));
+    const fromMemory = await Array.fromAsync(brokenRows(c.rows.values(), c.rows));
     expect(fromDisk).toEqual(fromMemory);
+    expect(fromDisk.some((r) => r[0] === origin + "/rubrique/contact@exemple.fr/" && r[3] === origin + "/rubrique/")).toBe(true);
 
     expect(await store.remove(c.id)).toBe(true);
     expect(await store.list()).toEqual([]);
