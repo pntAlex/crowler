@@ -155,3 +155,53 @@ test("presets.json cohabite avec les audits sans être pris pour l'un d'eux", as
     expect(await presets.list()).toHaveLength(1);
   });
 });
+
+test("l'URL de notification est enregistrée mais ne sort jamais par l'API", async () => {
+  await sandbox(async (presets, dir) => {
+    const url = "https://chat.googleapis.com/v1/spaces/AAA/messages?key=cle&token=jeton";
+    const r = await presets.put("prod", "https://exemple.fr/", opts(), url);
+    if ("error" in r) throw new Error(r.error);
+
+    // L'interface n'apprend que son existence : de quoi proposer de la retirer.
+    expect(r.preset).toEqual({ ...r.preset, chat: true });
+    expect(r.preset).not.toHaveProperty("chatUrl");
+    expect(JSON.stringify(await presets.list())).not.toContain("jeton");
+
+    // Le serveur, lui, doit pouvoir la rejouer.
+    expect((await presets.get("prod"))?.chatUrl).toBe(url);
+    expect(await readFile(join(dir, "presets.json"), "utf8")).toContain(url);
+  });
+});
+
+test("une mise à jour sans URL conserve la notification, clearChat la retire", async () => {
+  await sandbox(async (presets) => {
+    const url = "https://chat.googleapis.com/v1/spaces/AAA/messages?key=cle";
+    await presets.put("prod", "https://exemple.fr/", opts(), url);
+
+    // Le formulaire ne peut pas relire l'URL : réenregistrer ne doit pas la perdre.
+    const maj = await presets.put("prod", "https://exemple.fr/blog", opts({ maxDepth: 2 }));
+    if ("error" in maj) throw new Error(maj.error);
+    expect(maj.preset.chat).toBe(true);
+    expect((await presets.get("prod"))?.chatUrl).toBe(url);
+
+    expect(await presets.clearChat("prod")).toBe(true);
+    expect(await presets.clearChat("inconnu")).toBe(false);
+    const apres = await presets.get("prod");
+    expect(apres?.chatUrl).toBeUndefined();
+    expect(apres?.opts.maxDepth).toBe(2); // le reste du preset n'a pas bougé
+    expect((await presets.list())[0]!.chat).toBe(false);
+  });
+});
+
+test("un preset enregistré avant la notification reste lisible", async () => {
+  await sandbox(async (presets, dir) => {
+    const r = await presets.put("prod", "https://exemple.fr/", opts());
+    if ("error" in r) throw new Error(r.error);
+    const raw = JSON.parse(await readFile(join(dir, "presets.json"), "utf8"));
+    expect(raw[0]).not.toHaveProperty("chatUrl"); // pas de champ vide sur le disque
+
+    const again = (await import("./presets?" + Math.random())) as typeof import("./presets");
+    expect((await again.list())[0]!.chat).toBe(false);
+    expect((await again.verify("prod", r.token!))?.chatUrl).toBeUndefined();
+  });
+});

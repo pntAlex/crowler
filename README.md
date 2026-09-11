@@ -60,6 +60,8 @@ Copiez `.env.example` en `.env` : `docker compose` le lit tout seul.
 | `BLOCK_PRIVATE_IPS` | `1` | refuse les cibles sur réseau privé |
 | `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
 | `WEBHOOK_MIN_INTERVAL` | 60 | secondes minimum entre deux déclenchements d'un même preset |
+| `DOMAINS` | vide | domaine public : label Caddy, et base des liens dans les notifications |
+| `TZ` | `Europe/Paris` | fuseau des dates affichées dans les notifications ; l'image est en UTC |
 
 Deux variables ne se règlent que dans l'image, parce que la stack en dépend : `PORT`, fixé à
 3000 face à la publication ci-dessus, et `DATA_DIR`, fixé à `/app/data` face au volume. Hors
@@ -171,6 +173,12 @@ Réenregistrer un preset existant met à jour sa cible et ses réglages **sans t
 les webhooks déjà en place chez l'appelant continuent de marcher. Supprimer le preset invalide
 son jeton.
 
+Sous le sélecteur, le champ **Notification Google Chat** attache un espace au preset : ses
+audits déclenchés par webhook y annoncent leur départ et leur bilan (voir
+[Notifications Google Chat](#notifications-google-chat)). Comme le jeton, l'URL ne se relit pas
+— elle porte ses secrets dans sa query string. Réenregistrer le preset en laissant le champ vide
+la conserve ; **Retirer la notification** l'efface.
+
 Les presets vivent dans un seul fichier, `presets.json` sous `DATA_DIR`, à côté des dossiers
 d'audit. Maximum 25.
 
@@ -212,6 +220,29 @@ un second crawl. Exemple d'étape GitHub Actions, le jeton en secret de dépôt 
       -H "content-type: application/json" \
       -d '{"preset":"prod"}'
 ```
+
+## Notifications Google Chat
+
+Un preset qui porte une URL de webhook Google Chat poste deux cartes dans l'espace : une au
+départ de l'audit, une à son bilan.
+
+L'URL s'obtient dans l'espace Chat, menu de l'espace → *Applications et intégrations* →
+*Webhooks* → *Ajouter un webhook*. Elle ressemble à
+`https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…` et se colle telle quelle dans le
+champ **Notification Google Chat** des réglages du preset.
+
+La carte de départ dit le site, le preset et l'heure. Celle de fin ajoute le nombre d'URLs
+explorées, la durée, le décompte des liens possiblement cassés, les cinq premiers avec leur
+statut, et deux boutons de téléchargement : l'export des liens cassés et l'export complet.
+
+**Un audit lancé à la main depuis l'interface ne notifie pas.** La notification accompagne le
+déclenchement automatique — un post-déploiement qui appelle `/api/hooks/run` — pas le travail
+interactif, où l'écran montre déjà tout.
+
+Les boutons de téléchargement ont besoin de savoir sous quelle adresse le service est joignable :
+c'est `DOMAINS`. Sans elle, la carte part quand même, sans les boutons. Un espace injoignable,
+lent ou en erreur n'interrompt jamais un audit : l'échec part dans le journal du conteneur et le
+crawl se termine normalement.
 
 ## Pendant le crawl
 
@@ -394,6 +425,12 @@ laisser émettre un jeton ne lui donne aucun pouvoir de plus. L'instance doit re
 réseau de confiance ou un reverse-proxy qui l'authentifie, en n'ouvrant que `/api/hooks/run`
 sur l'extérieur.
 
+L'URL d'un webhook Google Chat est un secret : elle contient sa clé et son jeton en query
+string. Elle ne peut pas être hachée — il faut pouvoir la rejouer — donc elle est écrite en clair
+dans `presets.json`, créé en `0600`. Elle n'est en revanche **jamais renvoyée par l'API** :
+`GET /api/presets` n'en dit que l'existence, comme il tait l'empreinte des jetons. C'est pourquoi
+l'interface ne peut pas la relire, seulement la remplacer ou la retirer.
+
 Les jetons de webhook font 256 bits tirés au hasard et ne sont stockés que par leur empreinte
 SHA-256 : le fichier `presets.json` ne permet pas de reconstituer un jeton. La comparaison est
 à temps constant, et un preset inconnu coûte le même travail qu'un mauvais jeton — la durée de
@@ -420,11 +457,13 @@ demandent pas.
 bun test
 ```
 
-63 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+78 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
 absence de boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
 pages, `robots.txt`, garde SSRF, normalisation d'URL, extraction SEO — plafonds, fusion de
 `X-Robots-Tag`, canonique mise en file sans referer —, forme des deux CSV, aller-retour d'un
 audit par le disque et refus des identifiants qui sortiraient du dossier de données. Côté
 presets : jeton absent du fichier enregistré, rotation qui invalide l'ancien, mise à jour qui
 préserve le jeton, noms hors format refusés, plafond, et cohabitation de `presets.json` avec
-l'historique des audits.
+l'historique des audits. Côté notifications : dérivation de la base publique depuis `DOMAINS`,
+forme des deux cartes, plafond et échappement des URLs cassées affichées, et un envoi qui ne lève
+pas même quand l'espace répond 500 ou ne répond pas.

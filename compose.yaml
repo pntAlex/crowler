@@ -23,6 +23,12 @@ services:
       BLOCK_PRIVATE_IPS: ${BLOCK_PRIVATE_IPS:-1}
       MAX_SESSIONS: ${MAX_SESSIONS:-50}
       WEBHOOK_MIN_INTERVAL: ${WEBHOOK_MIN_INTERVAL:-60}
+      # Sert deux fois : le label Caddy plus bas, et la base des liens de
+      # téléchargement mis dans les notifications Google Chat.
+      DOMAINS: ${DOMAINS:-}
+      # L'image est en UTC : sans ce réglage, l'heure annoncée dans une
+      # notification n'est pas celle de qui la lit.
+      TZ: ${TZ:-Europe/Paris}
 
     # L'historique des audits : sans ce volume, recréer le conteneur repart
     # d'une ardoise vide.

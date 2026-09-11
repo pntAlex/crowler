@@ -1,5 +1,6 @@
+import * as chat from "./chat";
 import {
-  compileExcludes, Crawl, DEFAULTS, isPrivateHost, matchExclude, MAX_EXCLUDES,
+  compileExcludes, Crawl, DEFAULTS, isBroken, isPrivateHost, matchExclude, MAX_EXCLUDES,
   normalize, wire, type Options, type Row,
 } from "./crawler";
 import { csvResponse } from "./csv";
@@ -13,6 +14,9 @@ const MAX_JOBS = 5;
 /** Délai minimum entre deux crawls d'un même preset, côté webhook. */
 const HOOK_MIN_INTERVAL = Math.max(0, Number(process.env.WEBHOOK_MIN_INTERVAL ?? 60)) * 1000;
 const MAX_HOOK_BODY = 4 * 1024;
+/** Base des liens de téléchargement mis dans les notifications. DOMAINS sert
+    d'abord aux labels Caddy ; vide, la carte part simplement sans boutons. */
+const PUBLIC_BASE = chat.publicBase(process.env.DOMAINS);
 const FAIL_WINDOW = 60_000;
 const FAIL_MAX = 20;
 const INDEX = Bun.file(new URL("./public/index.html", import.meta.url).pathname);
@@ -124,8 +128,32 @@ function check(rawUrl: unknown, rawOpts: unknown): Checked | Refused {
   return { target, opts };
 }
 
+/**
+ * Même traitement que le sitemap forcé : cette URL vient de l'extérieur et c'est
+ * le serveur qui la requêtera. Elle passe donc les mêmes gardes, à
+ * l'enregistrement du preset comme à chaque déclenchement. Ne rien saisir n'est
+ * pas une faute : la chaîne vide veut dire « pas de notification ».
+ */
+function safeChatUrl(raw: unknown): string | Refused {
+  const s = typeof raw === "string" ? raw.trim().slice(0, 2048) : "";
+  if (!s) return "";
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return { error: "URL de notification invalide", code: 400 };
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return { error: "notification : seuls http et https sont acceptés", code: 400 };
+  }
+  if (BLOCK_PRIVATE && isPrivateHost(u.hostname)) {
+    return { error: "notification sur réseau privé refusée", code: 403 };
+  }
+  return s;
+}
+
 /** Démarre le crawl validé et le branche sur le flux SSE et sur le disque. */
-async function launch({ target, opts }: Checked, preset?: string): Promise<Crawl> {
+async function launch({ target, opts }: Checked, preset?: presets.Preset): Promise<Crawl> {
   const subs = new Set<Sub>();
   const crawl = new Crawl(
     target.href,
@@ -137,21 +165,66 @@ async function launch({ target, opts }: Checked, preset?: string): Promise<Crawl
     },
     BLOCK_PRIVATE,
   );
-  jobs.set(crawl.id, { crawl, subs, preset });
+  jobs.set(crawl.id, { crawl, subs, preset: preset?.name });
   gc();
   // L'audit entre dans l'historique dès son démarrage : une page rechargée en
   // cours de crawl le retrouve et se rebranche dessus.
-  await store.begin(crawl, preset).catch((e) => console.error("store", crawl.id, e));
+  await store.begin(crawl, preset?.name).catch((e) => console.error("store", crawl.id, e));
+
+  const checked = safeChatUrl(preset?.chatUrl);
+  if (typeof checked !== "string") console.error("chat", preset?.name, checked.error);
+  const notify = typeof checked === "string" ? checked : "";
+  if (notify) {
+    // Sans await : un espace Chat lent ne doit pas retarder la réponse à la CI.
+    void chat.send(
+      notify,
+      chat.startCard({ host: store.hostOf(crawl.start, crawl.id), preset: preset?.name ?? "", at: crawl.startedAt }),
+    );
+  }
+
   crawl
     .run()
     .catch((e) => console.error("crawl", crawl.id, e))
-    .finally(() =>
-      store
-        .save(crawl, preset)
-        .then(() => store.prune((id) => jobs.get(id)?.crawl.running === true))
-        .catch((e) => console.error("store", crawl.id, e)),
-    );
+    .finally(() => void finish(crawl, preset?.name, notify));
   return crawl;
+}
+
+/**
+ * Fin de crawl : l'audit figé sur disque et l'historique élagué d'abord, la
+ * notification ensuite — un espace Chat injoignable ne doit pas retarder
+ * l'élagage, et un disque en échec ne doit pas avaler le message.
+ */
+async function finish(crawl: Crawl, preset: string | undefined, notify: string): Promise<void> {
+  try {
+    await store.save(crawl, preset);
+    await store.prune((id) => jobs.get(id)?.crawl.running === true);
+  } catch (e) {
+    console.error("store", crawl.id, e);
+  }
+  if (!notify) return;
+  // Une seule passe sur les lignes : le total, et les premières à montrer.
+  const top: chat.Broken[] = [];
+  let broken = 0;
+  for (const r of crawl.rows.values()) {
+    if (!isBroken(r)) continue;
+    broken++;
+    if (top.length < chat.MAX_BROKEN_SHOWN) top.push({ url: r.url, status: r.status, error: r.error });
+  }
+  const s = crawl.stats();
+  await chat.send(
+    notify,
+    chat.doneCard({
+      host: store.hostOf(crawl.start, crawl.id),
+      preset: preset ?? "",
+      id: crawl.id,
+      reason: crawl.reason,
+      done: s.done,
+      broken,
+      elapsed: s.elapsed,
+      top,
+      base: PUBLIC_BASE,
+    }),
+  );
 }
 
 // ---- webhook ---------------------------------------------------------------
@@ -326,7 +399,7 @@ const server = Bun.serve({
     "/api/presets": {
       GET: async () => noStore(await presets.list()),
       POST: async (req) => {
-        let body: { name?: unknown; url?: unknown; opts?: unknown };
+        let body: { name?: unknown; url?: unknown; opts?: unknown; chatUrl?: unknown };
         try {
           body = await req.json();
         } catch {
@@ -337,9 +410,11 @@ const server = Bun.serve({
         }
         const c = check(body.url, body.opts);
         if (refused(c)) return bad(c.error, c.code);
+        const notify = safeChatUrl(body.chatUrl);
+        if (typeof notify !== "string") return bad(notify.error, notify.code);
         // On enregistre l'URL et les options telles que le crawl les recevra,
         // pour qu'un preset lance exactement ce que l'interface montrait.
-        const r = await presets.put(body.name, c.target.href, c.opts);
+        const r = await presets.put(body.name, c.target.href, c.opts, notify);
         return "error" in r ? bad(r.error) : noStore(r);
       },
     },
@@ -354,6 +429,13 @@ const server = Bun.serve({
         const token = await presets.rotate(req.params.name);
         return token ? noStore({ token }) : bad("preset inconnu", 404);
       },
+    },
+
+    // L'interface ne peut pas relire l'URL du webhook Google Chat, donc pas la
+    // vider en la réenregistrant : elle se retire par ici.
+    "/api/presets/:name/chat": {
+      DELETE: async (req) =>
+        (await presets.clearChat(req.params.name)) ? Response.json({ ok: true }) : bad("preset inconnu", 404),
     },
 
     // ---- webhook -----------------------------------------------------------
@@ -407,7 +489,7 @@ const server = Bun.serve({
           }
         }
 
-        const crawl = await launch(c, preset.name);
+        const crawl = await launch(c, preset);
         lastHook.set(preset.name, { at: now, id: crawl.id });
         return noStore({ preset: preset.name, id: crawl.id, running: true, started: true });
       },

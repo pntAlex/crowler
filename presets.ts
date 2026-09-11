@@ -26,16 +26,23 @@ export type Preset = {
   opts: Options;
   /** SHA-256 hex du jeton. Le jeton lui-même n'est écrit nulle part. */
   tokenHash: string;
+  /**
+   * Webhook Google Chat prévenu au début et à la fin des audits déclenchés par
+   * ce preset. Absent = pas de notification. Son URL porte ses secrets dans sa
+   * query string : elle est écrite ici, jamais renvoyée par l'API.
+   */
+  chatUrl?: string;
   createdAt: number;
   rotatedAt: number;
 };
 
-/** Ce que voit l'interface : tout sauf l'empreinte du jeton. */
-export type PublicPreset = Omit<Preset, "tokenHash">;
+/** Ce que voit l'interface : tout sauf les secrets. Du webhook Google Chat, elle
+    n'apprend que son existence — assez pour proposer de le retirer. */
+export type PublicPreset = Omit<Preset, "tokenHash" | "chatUrl"> & { chat: boolean };
 
 export const validName = (n: unknown): n is string => typeof n === "string" && NAME.test(n);
 
-const pub = ({ tokenHash: _, ...rest }: Preset): PublicPreset => rest;
+const pub = ({ tokenHash: _t, chatUrl, ...rest }: Preset): PublicPreset => ({ ...rest, chat: !!chatUrl });
 
 /*
  * SHA-256 nu, sans bcrypt ni argon2 : un jeton est 256 bits tirés au hasard, pas
@@ -110,18 +117,22 @@ export async function get(name: string): Promise<Preset | null> {
  * Crée le preset, ou met à jour la cible et les réglages d'un preset existant.
  * Le jeton n'est renvoyé qu'à la création : une mise à jour ne doit pas casser
  * les webhooks déjà en place chez l'appelant.
+ *
+ * `chatUrl` vide conserve celui déjà enregistré : l'interface ne peut pas le
+ * relire, elle ne peut donc pas le renvoyer. Pour l'enlever, voir `clearChat`.
  */
 export function put(
   name: string,
   url: string,
   opts: Options,
+  chatUrl?: string,
 ): Promise<{ preset: PublicPreset; token?: string } | { error: string }> {
   return locked(async () => {
     if (!validName(name)) return { error: "nom invalide : lettres, chiffres, tiret et souligné, 32 caractères max" };
     const all = await readAll();
     const i = all.findIndex((p) => p.name === name);
     if (i >= 0) {
-      const next: Preset = { ...all[i]!, url, opts };
+      const next: Preset = { ...all[i]!, url, opts, ...(chatUrl ? { chatUrl } : {}) };
       all[i] = next;
       await writeAll(all);
       return { preset: pub(next) };
@@ -129,7 +140,9 @@ export function put(
     if (all.length >= MAX_PRESETS) return { error: `limite de ${MAX_PRESETS} presets atteinte` };
     const { token, hash } = mint();
     const now = Date.now();
-    const next: Preset = { name, url, opts, tokenHash: hash, createdAt: now, rotatedAt: now };
+    // La clé reste absente sans webhook : un presets.json n'a pas de champ vide.
+    const chat = chatUrl ? { chatUrl } : {};
+    const next: Preset = { name, url, opts, ...chat, tokenHash: hash, createdAt: now, rotatedAt: now };
     all.push(next);
     await writeAll(all);
     return { preset: pub(next), token };
@@ -147,6 +160,20 @@ export function rotate(name: string): Promise<string | null> {
     all[i] = { ...all[i]!, tokenHash: hash, rotatedAt: Date.now() };
     await writeAll(all);
     return token;
+  });
+}
+
+/** Retire le webhook Google Chat sans toucher au reste du preset ni à son jeton. */
+export function clearChat(name: string): Promise<boolean> {
+  return locked(async () => {
+    if (!validName(name)) return false;
+    const all = await readAll();
+    const i = all.findIndex((p) => p.name === name);
+    if (i < 0) return false;
+    const { chatUrl: _c, ...rest } = all[i]!;
+    all[i] = rest;
+    await writeAll(all);
+    return true;
   });
 }
 

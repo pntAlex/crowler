@@ -150,9 +150,9 @@ details.cfg[open] summary::after{content:"–"}
   display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:10px 16px;
   background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:4px;
 }
-.f{display:flex;flex-direction:column;gap:5px;min-width:0}
-.f > span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
-.f input[type=number],.f input[type=text]{background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:100%}
+.f,.preset-chat{display:flex;flex-direction:column;gap:5px;min-width:0}
+.f > span,.preset-chat > span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.f input[type=number],.f input[type=text],.preset-chat input{background:transparent;border:1px solid var(--line);border-radius:5px;height:30px;padding:0 8px;width:100%}
 .f textarea{
   background:transparent;border:1px solid var(--line);border-radius:5px;padding:7px 9px;
   width:100%;resize:vertical;min-height:62px;line-height:1.45;font-size:12.5px;
@@ -175,6 +175,9 @@ details.cfg[open] summary::after{content:"–"}
 }
 .preset-row select{min-width:152px}
 .preset-row input[type=text]{flex:1;min-width:132px}
+/* Le webhook sortant appartient au preset, pas aux réglages du crawl : son
+   champ vit donc dans ce bloc et non dans la grille au-dessus. */
+.preset-chat{margin-top:9px}
 .preset-msg{margin:3px 0 0;font-family:var(--sans);font-size:11.5px;line-height:1.5;color:var(--ink-3)}
 .preset-msg.err{color:var(--s4)}
 .preset-key{
@@ -457,7 +460,14 @@ td.dim{color:var(--ink-3)}
           <button class="mini" id="preset-save" type="button">Enregistrer</button>
           <button class="mini" id="preset-token" type="button" disabled>Régénérer le jeton</button>
           <button class="mini" id="preset-del" type="button" disabled>Supprimer</button>
+          <button class="mini" id="preset-chat-del" type="button" disabled>Retirer la notification</button>
         </div>
+        <label class="preset-chat">
+          <span>Notification Google Chat
+            <em>— l’espace prévenu au départ et au bilan des audits que ce preset déclenche ; l’URL ne se relit pas</em></span>
+          <input id="preset-chat" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
+            placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…&amp;token=…">
+        </label>
         <p class="preset-msg" id="preset-msg" hidden></p>
         <div class="preset-key" id="preset-key" hidden>
           <b>Jeton créé — copiez-le maintenant, il ne sera plus affiché.</b>
@@ -763,11 +773,20 @@ function renderPresets() {
   presetTools();
 }
 
-/** Rotation et suppression ne visent que le preset sélectionné. */
+const CHAT_PLACEHOLDER = "https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…";
+
+/**
+ * Rotation, suppression et retrait de la notification ne visent que le preset
+ * sélectionné. Le champ du webhook est vidé au passage : son URL n'est jamais
+ * renvoyée par l'API, la laisser à l'écran ferait croire qu'elle a été relue.
+ */
 function presetTools() {
-  const on = !!$("preset-sel").value;
-  $("preset-token").disabled = !on;
-  $("preset-del").disabled = !on;
+  const p = presetList.find((x) => x.name === $("preset-sel").value);
+  $("preset-token").disabled = !p;
+  $("preset-del").disabled = !p;
+  $("preset-chat-del").disabled = !p?.chat;
+  $("preset-chat").value = "";
+  $("preset-chat").placeholder = p?.chat ? "notification enregistrée — laissez vide pour la conserver" : CHAT_PLACEHOLDER;
 }
 
 function presetMsg(text, err) {
@@ -811,7 +830,11 @@ $("preset-save").addEventListener("click", async () => {
     const res = await fetch("/api/presets", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, url: $("url").value.trim(), opts: readOpts() }),
+      body: JSON.stringify({
+        name, url: $("url").value.trim(), opts: readOpts(),
+        // Vide = on garde celle déjà enregistrée, côté serveur.
+        chatUrl: $("preset-chat").value.trim(),
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "enregistrement impossible");
@@ -837,6 +860,22 @@ $("preset-token").addEventListener("click", async () => {
     if (!res.ok) throw new Error(data.error || "rotation impossible");
     presetMsg(`Nouveau jeton pour « ${name} ». L’ancien ne fonctionne plus.`);
     showToken(name, data.token);
+  } catch (err) {
+    presetMsg(err.message, true);
+  }
+});
+
+$("preset-chat-del").addEventListener("click", async () => {
+  const name = $("preset-sel").value;
+  if (!name) return;
+  if (!confirm(`Retirer la notification Google Chat de « ${name} » ? Ses audits ne préviendront plus personne.`)) return;
+  try {
+    const res = await fetch(`/api/presets/${encodeURIComponent(name)}/chat`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).error || "retrait impossible");
+    await loadPresets();
+    $("preset-sel").value = name;
+    presetTools();
+    presetMsg(`Notification retirée de « ${name} ».`);
   } catch (err) {
     presetMsg(err.message, true);
   }
