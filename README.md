@@ -72,7 +72,9 @@ Une variante binaire unique est disponible si l'empreinte de l'image compte :
 
 ## Réglages
 
-Tous modifiables dans l'interface, sous « Réglages ».
+Tous modifiables dans l'interface, dans les sections repliables « Réglages » et « Exclusions et
+sitemap ». Repliée, une section résume son contenu — nombre de réglages qui s'écartent des
+défauts, motifs d'exclusion — et chacune reste ouverte ou fermée d'une visite à l'autre.
 
 | Réglage | Défaut | Effet |
 |---|---|---|
@@ -137,6 +139,14 @@ des URLs, exports CSV — et remet le formulaire sur les réglages utilisés, po
 audit d'un clic. Un audit encore en cours se reprend en direct : rafraîchir la page pendant un
 crawl le retrouve et se rebranche sur son flux d'événements.
 
+Pour supprimer, on sélectionne. La pastille de statut d'une entrée se coche d'un clic,
+⌘-clic (Ctrl-clic hors Mac) ajoute ou retire un audit, Maj-clic étend la sélection jusqu'à
+l'entrée cliquée. Une barre apparaît alors en bas de l'historique, avec le nombre d'audits
+sélectionnés et le bouton **Supprimer** ; une confirmation précède toute suppression. Ouvrir un
+audit ne touche pas à la sélection : on peut vérifier ce qu'on s'apprête à supprimer. Un audit
+en cours ne se sélectionne pas, il s'arrête d'abord. Tout se fait aussi au clavier, voir
+[Raccourcis clavier](#raccourcis-clavier).
+
 Le stockage est un dossier par audit sous `DATA_DIR`, deux fichiers texte dedans :
 
 ```
@@ -155,29 +165,50 @@ laissé à `0` est un crawl que l'arrêt du serveur a coupé ; il est affiché �
 
 Le dossier `data/` est ignoré par git et par le build Docker.
 
+## Raccourcis clavier
+
+| Touche | Effet |
+|---|---|
+| `N` | nouvel audit |
+| `⌘ Entrée` (`Ctrl Entrée` hors Mac) | lance l'audit, depuis n'importe quel champ |
+| `/` | filtre les URLs |
+| `1` à `4` | change d'onglet ; sur les onglets, `←` et `→` aussi |
+| `↑` `↓` puis `Entrée` | parcourent l'historique, ouvrent l'audit |
+| `Espace` | sélectionne l'audit sous le curseur, comme `⌘`-clic |
+| `Maj ↑` `Maj ↓` | étendent la sélection, comme `Maj`-clic |
+| `⌘ A` | sélectionne tout l'historique |
+| `⌫` ou `Suppr` | supprime la sélection, après confirmation |
+| `Échap` | annule la sélection, ou ferme la confirmation |
+| `?` | affiche ou masque cet aide-mémoire, en bas de la barre d'historique |
+
+Les touches seules ne valent que hors saisie : un `n` tapé dans un champ reste un `n`. Les
+chiffres se lisent sur la touche physique : `1` est donc la touche `&` d'un clavier AZERTY.
+
 ## Presets
 
 Un preset, c'est la cible et ses réglages enregistrés sous un nom. Il sert à deux choses :
 relancer le même audit sans le reconfigurer, et le déclencher de l'extérieur par webhook.
 
-Sous « Réglages », en bas : entrez un nom et cliquez **Enregistrer**. Le preset reprend l'URL du
-formulaire et l'ensemble des réglages affichés au moment de l'enregistrement. Le sélecteur à
-gauche recharge un preset dans le formulaire, prêt à lancer ou à modifier.
+Dans la section « Presets » : entrez un nom et cliquez **Enregistrer**. Le preset reprend l'URL
+du formulaire et l'ensemble des réglages affichés au moment de l'enregistrement. Le sélecteur
+**Charger** recharge un preset dans le formulaire, prêt à lancer ou à modifier.
 
-À la **création**, un jeton est affiché avec la commande `curl` prête à coller dans un pipeline.
-Il n'est montré qu'une fois : seule son empreinte SHA-256 est conservée, il est impossible de le
-retrouver ensuite. Perdu, il se remplace avec **Régénérer le jeton** — l'ancien cesse
-immédiatement de fonctionner.
+À la **création**, la section « Webhook » s'ouvre sur le jeton, déjà placé dans la commande
+`curl` prête à coller dans un pipeline. Il n'est montré qu'une fois : seule son empreinte SHA-256
+est conservée, il est impossible de le retrouver ensuite. Hors de ce moment, la commande reste
+affichée pour le preset chargé, avec `$CROWLER_TOKEN` à la place du jeton. Perdu, celui-ci se
+remplace avec **Régénérer le jeton** — l'ancien cesse immédiatement de fonctionner.
 
 Réenregistrer un preset existant met à jour sa cible et ses réglages **sans toucher au jeton** :
 les webhooks déjà en place chez l'appelant continuent de marcher. Supprimer le preset invalide
 son jeton.
 
-Sous le sélecteur, le champ **Notification Google Chat** attache un espace au preset : ses
-audits déclenchés par webhook y annoncent leur départ et leur bilan (voir
-[Notifications Google Chat](#notifications-google-chat)). Comme le jeton, l'URL ne se relit pas
-— elle porte ses secrets dans sa query string. Réenregistrer le preset en laissant le champ vide
-la conserve ; **Retirer la notification** l'efface.
+Dans la même section « Webhook », le champ **Notification Google Chat** attache un espace au
+preset chargé : ses audits déclenchés par webhook y annoncent leur départ et leur bilan (voir
+[Notifications Google Chat](#notifications-google-chat)). Son bouton **Enregistrer** ne change que
+la notification, pas la cible ni les réglages du preset. Comme le jeton, l'URL ne se relit pas —
+elle porte ses secrets dans sa query string. Réenregistrer le preset la conserve ; **Retirer**
+l'efface.
 
 Les presets vivent dans un seul fichier, `presets.json` sous `DATA_DIR`, à côté des dossiers
 d'audit. Maximum 25.
@@ -229,7 +260,7 @@ départ de l'audit, une à son bilan.
 L'URL s'obtient dans l'espace Chat, menu de l'espace → *Applications et intégrations* →
 *Webhooks* → *Ajouter un webhook*. Elle ressemble à
 `https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…` et se colle telle quelle dans le
-champ **Notification Google Chat** des réglages du preset.
+champ **Notification Google Chat** de la section « Webhook », le preset chargé.
 
 La carte de départ dit le site, le preset et l'heure. Celle de fin ajoute le nombre d'URLs
 explorées, la durée, le décompte des liens possiblement cassés, les cinq premiers avec leur

@@ -19,7 +19,6 @@ const MAX_HOOK_BODY = 4 * 1024;
 const PUBLIC_BASE = chat.publicBase(process.env.DOMAINS);
 const FAIL_WINDOW = 60_000;
 const FAIL_MAX = 20;
-const INDEX = Bun.file(new URL("./public/index.html", import.meta.url).pathname);
 
 type Sub = (chunk: string) => void;
 type Job = { crawl: Crawl; subs: Set<Sub>; preset?: string };
@@ -287,13 +286,23 @@ async function hopsOf(id: string): Promise<ReadonlyMap<string, Row>> {
 
 // ---- server ----------------------------------------------------------------
 
+/** Un fichier de l'interface, relu sur le disque à chaque requête. Les trois
+    changent ensemble : sans revalidation, un navigateur pourrait marier un
+    index.html neuf à l'app.js d'avant. */
+function asset(name: string, type: string) {
+  const file = Bun.file(new URL(`./public/${name}`, import.meta.url).pathname);
+  return () => new Response(file, { headers: { "content-type": type, "cache-control": "no-cache" } });
+}
+
 const server = Bun.serve({
   port: PORT,
   idleTimeout: 0, // SSE connections stay open for the whole crawl
   development: false,
 
   routes: {
-    "/": () => new Response(INDEX, { headers: { "content-type": "text/html; charset=utf-8" } }),
+    "/": asset("index.html", "text/html; charset=utf-8"),
+    "/style.css": asset("style.css", "text/css; charset=utf-8"),
+    "/app.js": asset("app.js", "text/javascript; charset=utf-8"),
     "/favicon.ico": new Response(null, { status: 204 }),
     "/health": new Response("ok"),
 

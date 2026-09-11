@@ -20,8 +20,10 @@ c'est une décision à poser explicitement, pas à glisser dans un commit de fon
 - Pas de base de données. La persistance est en fichiers texte lisibles avec `cat`, filtrables
   avec `grep`, sauvegardables avec `cp` : un dossier par audit, `presets.json` à côté. Aucun
   schéma, aucune migration.
-- L'interface est un seul HTML sans framework ni build : CSS et JS en ligne, rendu par
-  concaténation de chaînes échappées. Un `<script>` de plus ne se justifie pas.
+- L'interface tient en trois fichiers statiques, sans framework ni build : `public/index.html`
+  pour le balisage, `public/style.css` et `public/app.js`, servis tels quels par `server.ts`. Le
+  rendu se fait par concaténation de chaînes échappées, sans bibliothèque : un `<script>` tiers
+  ne se justifie pas.
 - Le format des données reste tolérant : un champ absent est un champ absent, pas une erreur.
   Un enregistrement écrit avant l'ajout d'un réglage doit rester lisible après.
 
