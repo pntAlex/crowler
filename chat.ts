@@ -55,12 +55,22 @@ const stamp = (at: number) => new Date(at).toLocaleString("fr-FR", { dateStyle: 
  * et contenir des jokers. On en tire la première entrée utilisable comme base
  * des liens de téléchargement, et rien du tout si elle n'en offre aucune — une
  * carte sans boutons vaut mieux qu'un lien qui ne mène nulle part.
+ *
+ * Chaque entrée se lit comme Caddy lit une adresse de site : sans schéma c'est
+ * du HTTPS, mais un `http://` explicite le reste. Forcer HTTPS casserait les
+ * boutons d'une instance servie sans proxy TLS, `http://localhost:3000` en local.
  */
 export function publicBase(domains: string | undefined): string {
   for (const raw of String(domains ?? "").split(/[,\s]+/)) {
-    const host = raw.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-    if (!host || host.startsWith("*")) continue; // un joker ne fait pas une URL cliquable
-    return "https://" + host;
+    if (!raw) continue;
+    let u: URL;
+    try {
+      u = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw);
+    } catch {
+      continue; // `:8080` est une adresse de site pour Caddy, pas une URL
+    }
+    if (u.hostname.includes("*")) continue; // un joker ne fait pas une URL cliquable
+    return u.origin;
   }
   return "";
 }

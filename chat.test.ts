@@ -23,11 +23,20 @@ test("la base des liens se tire de DOMAINS, jokers et schéma compris", () => {
   expect(chat.publicBase("exemple.fr, www.exemple.fr")).toBe("https://exemple.fr");
   expect(chat.publicBase("https://exemple.fr")).toBe("https://exemple.fr");
   expect(chat.publicBase("https://exemple.fr/chemin")).toBe("https://exemple.fr");
+  expect(chat.publicBase("exemple.fr:8443")).toBe("https://exemple.fr:8443");
   // Un joker Caddy ne fait pas une URL cliquable : on prend l'entrée suivante.
   expect(chat.publicBase("*.exemple.fr, exemple.fr")).toBe("https://exemple.fr");
   expect(chat.publicBase("*.exemple.fr")).toBe("");
+  expect(chat.publicBase("https://*.exemple.fr")).toBe("");
+  // « Tout hôte sur ce port » pour Caddy, mais aucune adresse où cliquer.
+  expect(chat.publicBase(":8080, exemple.fr")).toBe("https://exemple.fr");
   expect(chat.publicBase("")).toBe("");
   expect(chat.publicBase(undefined)).toBe("");
+});
+
+test("un http:// explicite reste en HTTP : sans proxy TLS, des liens en HTTPS ne mèneraient nulle part", () => {
+  expect(chat.publicBase("http://localhost:3000")).toBe("http://localhost:3000");
+  expect(chat.publicBase("http://192.168.1.20:3000/")).toBe("http://192.168.1.20:3000");
 });
 
 test("une durée se lit dans un fil de discussion", () => {

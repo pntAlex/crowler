@@ -55,7 +55,7 @@ services:
 
 networks:
   default:
-    name: ${NETWORK_NAME:-}
+    name: ${NETWORK_NAME:-crowler-network}
     external: ${NETWORK_EXTERNAL:-false}
 
 

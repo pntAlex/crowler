@@ -60,7 +60,7 @@ Copiez `.env.example` en `.env` : `docker compose` le lit tout seul.
 | `BLOCK_PRIVATE_IPS` | `1` | refuse les cibles sur réseau privé |
 | `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
 | `WEBHOOK_MIN_INTERVAL` | 60 | secondes minimum entre deux déclenchements d'un même preset |
-| `DOMAINS` | vide | domaine public : label Caddy, et base des liens dans les notifications |
+| `DOMAINS` | vide | domaine public : label Caddy, et base des liens dans les notifications ; sans proxy TLS, l'adresse complète (`http://localhost:3000`) |
 | `TZ` | `Europe/Paris` | fuseau des dates affichées dans les notifications ; l'image est en UTC |
 
 Deux variables ne se règlent que dans l'image, parce que la stack en dépend : `PORT`, fixé à
@@ -271,9 +271,12 @@ déclenchement automatique — un post-déploiement qui appelle `/api/hooks/run`
 interactif, où l'écran montre déjà tout.
 
 Les boutons de téléchargement ont besoin de savoir sous quelle adresse le service est joignable :
-c'est `DOMAINS`. Sans elle, la carte part quand même, sans les boutons. Un espace injoignable,
-lent ou en erreur n'interrompt jamais un audit : l'échec part dans le journal du conteneur et le
-crawl se termine normalement.
+c'est `DOMAINS`, lue comme Caddy lit une adresse de site — sans schéma, les liens partent en
+HTTPS. Une instance servie sans proxy TLS devant, en local notamment, donne son adresse complète :
+`DOMAINS=http://localhost:3000`, des liens qui ne s'ouvrent alors que sur la machine qui fait
+tourner le service. Sans `DOMAINS`, la carte part quand même, sans les boutons. Un espace
+injoignable, lent ou en erreur n'interrompt jamais un audit : l'échec part dans le journal du
+conteneur et le crawl se termine normalement.
 
 ## Pendant le crawl
 
@@ -498,7 +501,7 @@ demandent pas.
 bun test
 ```
 
-82 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
+83 tests sur un site fixture volontairement cassé : referers d'une 404 liée depuis deux pages,
 referers remontés à travers les redirections jusqu'à la page qui porte le lien, absence de
 boucle sur un cycle A↔B, `<base href>`, redirections, plafonds de profondeur et de
 pages, `robots.txt`, garde SSRF, normalisation d'URL, extraction SEO — plafonds, fusion de
@@ -507,5 +510,5 @@ audit par le disque et refus des identifiants qui sortiraient du dossier de donn
 presets : jeton absent du fichier enregistré, rotation qui invalide l'ancien, mise à jour qui
 préserve le jeton, noms hors format refusés, plafond, et cohabitation de `presets.json` avec
 l'historique des audits. Côté notifications : dérivation de la base publique depuis `DOMAINS`,
-forme des deux cartes, plafond et échappement des URLs cassées affichées, et un envoi qui ne lève
+`http://` explicite compris, forme des deux cartes, plafond et échappement des URLs cassées affichées, et un envoi qui ne lève
 pas même quand l'espace répond 500 ou ne répond pas.
