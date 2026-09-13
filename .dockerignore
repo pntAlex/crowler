@@ -3,7 +3,6 @@
 node_modules
 *.log
 *.csv
-crowler
 data
 *.test.ts
 fixture.ts

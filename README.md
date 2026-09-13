@@ -67,9 +67,6 @@ Deux variables ne se règlent que dans l'image, parce que la stack en dépend : 
 3000 face à la publication ci-dessus, et `DATA_DIR`, fixé à `/app/data` face au volume. Hors
 conteneur, elles valent `3000` et `./data`.
 
-Une variante binaire unique est disponible si l'empreinte de l'image compte :
-`bun run compile` produit un exécutable autonome déployable sur `scratch` ou `distroless`.
-
 ## Réglages
 
 Tous modifiables dans l'interface, dans les sections repliables « Réglages » et « Exclusions et

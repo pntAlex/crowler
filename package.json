@@ -8,7 +8,6 @@
     "start": "bun server.ts",
     "dev": "bun --hot server.ts",
     "test": "bun test",
-    "compile": "bun build --compile --minify --target=bun-linux-x64 server.ts --outfile crowler",
     "fixture": "bun fixture.ts"
   }
 }
