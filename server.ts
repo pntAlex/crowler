@@ -4,6 +4,7 @@ import {
   normalize, wire, type Options, type Row,
 } from "./crawler";
 import { csvResponse } from "./csv";
+import { log, why } from "./log";
 import * as presets from "./presets";
 import { BROKEN_HEADER, brokenRows, PAGES_HEADER, pagesRows } from "./report";
 import * as store from "./store";
@@ -168,10 +169,10 @@ async function launch({ target, opts }: Checked, preset?: presets.Preset): Promi
   gc();
   // L'audit entre dans l'historique dès son démarrage : une page rechargée en
   // cours de crawl le retrouve et se rebranche dessus.
-  await store.begin(crawl, preset?.name).catch((e) => console.error("store", crawl.id, e));
+  await store.begin(crawl, preset?.name).catch((e) => log("error", `écriture de l'audit : ${why(e)}`, `[${crawl.id}]`));
 
   const checked = safeChatUrl(preset?.chatUrl);
-  if (typeof checked !== "string") console.error("chat", preset?.name, checked.error);
+  if (typeof checked !== "string") log("error", `notification du preset ${preset?.name} : ${checked.error}`);
   const notify = typeof checked === "string" ? checked : "";
   if (notify) {
     // Sans await : un espace Chat lent ne doit pas retarder la réponse à la CI.
@@ -183,7 +184,7 @@ async function launch({ target, opts }: Checked, preset?: presets.Preset): Promi
 
   crawl
     .run()
-    .catch((e) => console.error("crawl", crawl.id, e))
+    .catch((e) => log("error", `crawl interrompu : ${why(e)}`, `[${crawl.id}]`))
     .finally(() => void finish(crawl, preset?.name, notify));
   return crawl;
 }
@@ -198,7 +199,7 @@ async function finish(crawl: Crawl, preset: string | undefined, notify: string):
     await store.save(crawl, preset);
     await store.prune((id) => jobs.get(id)?.crawl.running === true);
   } catch (e) {
-    console.error("store", crawl.id, e);
+    log("error", `enregistrement de l'audit : ${why(e)}`, `[${crawl.id}]`);
   }
   if (!notify) return;
   // Une seule passe sur les lignes : le total, et les premières à montrer.
@@ -294,7 +295,7 @@ function asset(name: string, type: string) {
   return () => new Response(file, { headers: { "content-type": type, "cache-control": "no-cache" } });
 }
 
-const server = Bun.serve({
+export const server = Bun.serve({
   port: PORT,
   idleTimeout: 0, // SSE connections stay open for the whole crawl
   development: false,
@@ -314,15 +315,26 @@ const server = Bun.serve({
 
     "/api/crawl": {
       POST: async (req) => {
-        let body: { url?: unknown; opts?: unknown };
+        let body: { url?: unknown; opts?: unknown; preset?: unknown };
         try {
           body = await req.json();
         } catch {
           return bad("corps JSON invalide");
         }
-        const c = check(body.url, body.opts);
+        // Lancer un preset depuis son espace ne transmet que son nom : la cible
+        // et les réglages sont relus ici, comme pour un webhook. L'audit qui en
+        // sort est donc celui qu'annonce le preset, pas celui d'un formulaire
+        // modifié depuis, et il porte son nom dans l'historique.
+        const named = body.preset !== undefined && body.preset !== "";
+        const p = named ? await presets.get(String(body.preset)) : null;
+        if (named && !p) return bad("preset inconnu", 404);
+        const c = check(p ? p.url : body.url, p ? p.opts : body.opts);
         if (refused(c)) return bad(c.error, c.code);
-        const crawl = await launch(c);
+        // Le preset sert de cible et d'étiquette, pas de notification : un clic
+        // dans l'interface ne poste pas dans l'espace Chat d'une équipe. Voir
+        // README, « Notifications Google Chat » — elles accompagnent le
+        // déclenchement automatique, pas le travail interactif.
+        const crawl = await launch(c, p ? { ...p, chatUrl: undefined } : undefined);
         return Response.json({ id: crawl.id, start: crawl.start, opts: crawl.opts });
       },
     },
@@ -383,6 +395,7 @@ const server = Bun.serve({
           j.subs.add(self);
           self("retry: 2000\n\n");
           self(frame({ type: "snapshot", rows: j.crawl.snapshot(), stats: j.crawl.stats(), start: j.crawl.start }));
+          self(frame({ type: "logs", lines: j.crawl.logs }));
           if (!j.crawl.running) self(frame({ type: "done", stats: j.crawl.stats(), reason: j.crawl.reason }));
         },
         cancel() {
@@ -482,6 +495,7 @@ const server = Bun.serve({
         const preset = await presets.verify(body?.preset, token);
         if (!preset) {
           noteFail(ip);
+          log("warn", `webhook refusé depuis ${ip} : jeton ou preset invalide`);
           // Même message pour un preset inconnu et pour un mauvais jeton : la
           // réponse ne dit pas quels presets existent.
           return noStore({ error: "jeton ou preset invalide" }, { status: 401 });
@@ -535,4 +549,4 @@ async function host(id: string): Promise<string> {
   return (await store.read(id))?.host ?? id;
 }
 
-console.log(`crowler → http://localhost:${server.port}  (réseaux privés ${BLOCK_PRIVATE ? "bloqués" : "autorisés"})`);
+log("info", `crowler → http://localhost:${server.port} (réseaux privés ${BLOCK_PRIVATE ? "bloqués" : "autorisés"})`);

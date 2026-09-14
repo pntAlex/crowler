@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/style.css">
 <script src="/app.js" defer></script>
 </head>
-<body>
+<body data-space="audit">
 <svg class="sprite" aria-hidden="true">
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
@@ -20,6 +20,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M7.5 14h9"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+  <symbol id="i-logs" viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h7"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
   <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17Z" fill="currentColor"/></symbol>
 </svg>
@@ -33,6 +34,10 @@
     <button class="btn new" id="new" type="button" title="Nouvel audit (N)">
       <svg class="i"><use href="#i-plus"/></svg>Nouvel audit<kbd>N</kbd>
     </button>
+    <div class="side-t"><span>Presets</span>
+      <button class="icon-btn sm" id="pre-new" type="button" title="Nouveau preset, à partir des réglages affichés"
+        aria-label="Nouveau preset"><svg class="i"><use href="#i-plus"/></svg></button></div>
+    <div class="side-list pres" id="pre-list" aria-label="Presets enregistrés"></div>
     <div class="side-t"><span>Historique</span><span id="side-n"></span></div>
     <div class="side-list" id="side-list" role="listbox" aria-multiselectable="true" aria-label="Historique des audits"></div>
     <div class="picks" id="picks" hidden>
@@ -45,8 +50,9 @@
       <summary><svg class="i"><use href="#i-key"/></svg>Raccourcis clavier<kbd>?</kbd></summary>
       <dl>
         <dt><kbd>N</kbd></dt><dd>nouvel audit</dd>
-        <dt><kbd class="mod">⌘</kbd><kbd>Entrée</kbd></dt><dd>lancer l’audit, depuis n’importe quel champ</dd>
+        <dt><kbd class="mod">⌘</kbd><kbd>Entrée</kbd></dt><dd>lancer l’audit — enregistrer, dans l’espace d’un preset</dd>
         <dt><kbd>/</kbd></dt><dd>filtrer les URLs</dd>
+        <dt><kbd>J</kbd></dt><dd>ouvrir ou fermer le journal</dd>
         <dt><kbd>1</kbd>…<kbd>4</kbd></dt><dd>changer d’onglet</dd>
         <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>parcourir l’historique, <kbd>Entrée</kbd> ouvre</dd>
         <dt><kbd>Espace</kbd></dt><dd>sélectionner, comme <kbd class="mod">⌘</kbd>-clic</dd>
@@ -65,7 +71,9 @@
         <h1>Nouvel audit</h1>
         <p class="crumb-m">Explorez un site, relevez chaque lien cassé et la page qui le contient.</p>
       </div>
-      <div class="acts" id="acts" hidden>
+      <div class="acts aud-only" id="acts" hidden>
+        <button class="icon-btn framed" id="logs-btn" type="button" aria-expanded="false" aria-controls="logs"
+          title="Journal du crawl (J)" aria-label="Journal du crawl"><svg class="i"><use href="#i-logs"/></svg></button>
         <button class="btn" id="dl-broken" type="button" title="Exporter les liens cassés en CSV">
           <svg class="i"><use href="#i-down"/></svg>Liens cassés</button>
         <button class="btn" id="dl-pages" type="button" title="Exporter toutes les URLs en CSV">
@@ -73,34 +81,27 @@
         <button class="icon-btn framed danger" id="del" type="button" title="Supprimer cet audit"
           aria-label="Supprimer cet audit"><svg class="i"><use href="#i-trash"/></svg></button>
       </div>
+      <div class="acts pre-only" id="pre-acts" hidden>
+        <button class="btn" id="pre-run" type="button" title="Lancer l’audit de ce preset">Lancer maintenant</button>
+        <button class="icon-btn framed danger" id="pre-del" type="button" title="Supprimer ce preset"
+          aria-label="Supprimer ce preset"><svg class="i"><use href="#i-trash"/></svg></button>
+      </div>
     </header>
 
     <form class="launch" id="form">
+      <input class="in mono pre-only" id="pre-name" type="text" maxlength="32" placeholder="nom" hidden
+        spellcheck="false" autocapitalize="off" aria-label="Nom du preset">
       <input id="url" type="url" placeholder="https://exemple.fr" required autocomplete="url" spellcheck="false"
         aria-label="URL du site à auditer">
-      <button class="btn primary" id="go" type="submit">Auditer</button>
-      <button class="btn halt" id="halt" type="button" hidden>Arrêter</button>
+      <button class="btn primary aud-only" id="go" type="submit">Auditer</button>
+      <button class="btn halt aud-only" id="halt" type="button" hidden>Arrêter</button>
+      <button class="btn primary pre-only" id="pre-save" type="submit">Enregistrer</button>
     </form>
+    <p class="dirty pre-only" id="dirty" hidden>Modifications non enregistrées
+      <button class="btn sm" id="pre-undo" type="button">Annuler</button></p>
+    <p class="msg pre-only" id="pre-msg" hidden></p>
 
     <div class="cfgs" id="cfgs">
-
-      <details class="sec" id="sec-presets">
-        <summary><svg class="i chev"><use href="#i-chev"/></svg><span class="sec-t">Presets</span><span class="sec-h" id="h-presets"></span></summary>
-        <div class="sec-b">
-          <p class="help">La cible et les réglages, enregistrés sous un nom : rechargés d’un clic, et déclenchables par webhook.</p>
-          <div class="row">
-            <label class="fld"><span>Charger</span>
-              <select class="in" id="preset-sel"><option value="">— aucun —</option></select></label>
-            <label class="fld grow"><span>Nom <em>lettres, chiffres, - et _</em></span>
-              <input class="in mono" id="preset-name" type="text" maxlength="32" placeholder="prod"
-                spellcheck="false" autocapitalize="off"></label>
-            <button class="btn primary" id="preset-save" type="button">Enregistrer</button>
-            <button class="icon-btn framed danger" id="preset-del" type="button" disabled title="Supprimer ce preset"
-              aria-label="Supprimer ce preset"><svg class="i"><use href="#i-trash"/></svg></button>
-          </div>
-          <p class="msg" id="preset-msg" hidden></p>
-        </div>
-      </details>
 
       <details class="sec" id="sec-cfg">
         <summary><svg class="i chev"><use href="#i-chev"/></svg><span class="sec-t">Réglages</span><span class="sec-h" id="h-cfg"></span></summary>
@@ -146,14 +147,14 @@
         </div>
       </details>
 
-      <details class="sec" id="sec-hook">
-        <summary><svg class="i chev"><use href="#i-chev"/></svg><span class="sec-t">Webhook</span><span class="sec-h" id="h-hook"></span></summary>
+      <details class="sec pre-only" id="sec-hook">
+        <summary><svg class="i chev"><use href="#i-chev"/></svg><span class="sec-t">Déclenchement</span><span class="sec-h" id="h-hook"></span></summary>
         <div class="sec-b">
-          <p class="help" id="hook-none">Chargez ou enregistrez un preset : son audit se déclenche alors de l’extérieur — depuis une CI,
-            après un déploiement — et peut prévenir un espace Google Chat.</p>
+          <p class="help" id="hook-new" hidden>Le jeton de déclenchement et la notification Google Chat s’attachent
+            au preset une fois qu’il est enregistré.</p>
           <div class="hook" id="hook" hidden>
             <div class="fld">
-              <span>Déclencher « <b id="hook-name"></b> »</span>
+              <span>Déclencher de l’extérieur</span>
               <p class="key" id="preset-key" hidden>Jeton créé — copiez-le maintenant, il ne sera plus affiché.</p>
               <div class="code-box">
                 <textarea class="in" id="preset-curl" rows="4" readonly wrap="off" spellcheck="false"
@@ -173,7 +174,7 @@
                 <button class="btn" id="chat-save" type="button">Enregistrer</button>
                 <button class="btn danger-ghost" id="preset-chat-del" type="button" disabled>Retirer</button>
               </div>
-              <small>L’espace prévenu au départ et au bilan des audits que ce preset déclenche. L’URL porte ses secrets : elle ne se relit pas.</small>
+              <small>L’espace prévenu au départ et au bilan des audits de ce preset. L’URL porte ses secrets : elle ne se relit pas.</small>
             </div>
             <p class="msg" id="hook-msg" hidden></p>
           </div>
@@ -182,7 +183,12 @@
 
     </div>
 
-    <section class="meter" id="meter" aria-label="Répartition des statuts" hidden>
+    <section class="runs pre-only" id="pre-runs" hidden>
+      <div class="runs-t"><h2>Ses audits</h2><span class="n" id="pre-runs-n">0</span></div>
+      <div class="runs-list" id="pre-runs-list"></div>
+    </section>
+
+    <section class="meter aud-only" id="meter" aria-label="Répartition des statuts" hidden>
       <div class="readout" id="readout">
         <span class="cursor" aria-hidden="true"></span>
         <span class="rd-tag" id="rd-tag">exploration</span>
@@ -201,7 +207,7 @@
       </div>
     </section>
 
-    <section class="board">
+    <section class="board aud-only">
       <div class="rail" id="rail" hidden>
         <div class="tabs" id="tabs" role="tablist" aria-label="Vues de l’audit">
           <button class="tab" id="tab-broken" type="button" role="tab" aria-selected="true" aria-controls="panel">Liens cassés<span class="n" id="n-broken">0</span></button>
@@ -221,6 +227,17 @@
     </section>
 
   </main>
+
+  <aside class="logs aud-only" id="logs" hidden aria-label="Journal du crawl">
+    <div class="logs-h">
+      <b>Journal</b>
+      <span class="logs-n" id="logs-n"></span>
+      <button class="icon-btn sm" id="logs-close" type="button" title="Fermer le journal"
+        aria-label="Fermer le journal"><svg class="i"><use href="#i-x"/></svg></button>
+    </div>
+    <ol class="logs-l" id="logs-l"><li class="empty">Aucun crawl en cours.</li></ol>
+    <p class="logs-foot" id="logs-foot">Les lignes détaillées — une par URL — demandent <code>LOG_LEVEL=debug</code>.</p>
+  </aside>
 </div>
 
 <dialog class="ask" id="ask" aria-labelledby="ask-msg">

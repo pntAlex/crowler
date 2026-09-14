@@ -10,6 +10,7 @@
  *   https://developers.google.com/workspace/chat/format-messages  (balisage des textes)
  *   https://addons.gsuite.google.com/uikit/builder                (prévisualisation)
  */
+import { log, why } from "./log";
 
 /** Au-delà, le message devient un rapport : c'est le rôle du CSV joint. */
 export const MAX_BROKEN_SHOWN = 5;
@@ -156,8 +157,8 @@ export async function send(url: string, message: unknown): Promise<void> {
     });
     const body = await res.text(); // lu pour libérer la connexion, pas pour son contenu
     // L'URL porte ses secrets dans sa query string : elle ne va pas dans le journal.
-    if (!res.ok) console.error("chat", res.status, body.slice(0, 200));
+    if (!res.ok) log("error", `notification Chat refusée (${res.status}) : ${body.slice(0, 200)}`);
   } catch (e) {
-    console.error("chat", (e as Error).message);
+    log("error", `notification Chat injoignable : ${why(e)}`);
   }
 }

@@ -2,6 +2,7 @@
  * Zero-dependency crawler. Links are extracted with Bun's native HTMLRewriter
  * (streaming, no DOM) so memory stays flat regardless of page size.
  */
+import { log, type Level, type Line } from "./log";
 import { Robots } from "./robots";
 import { collect } from "./sitemap";
 
@@ -128,7 +129,12 @@ export type SitemapInfo = { sources: string[]; errors: string[] };
 
 export type Event =
   | { type: "batch"; rows: unknown[]; stats: Stats }
+  | { type: "log"; line: Line }
   | { type: "done"; stats: Stats; reason: string; sitemap: SitemapInfo };
+
+/** Lignes gardées pour l'interface qui se branche en cours de route. Le journal
+    complet est sur stdout : celui-ci n'est qu'un rattrapage. */
+const LOG_CAP = 300;
 
 export const MAX_EXCLUDES = 25;
 const MAX_PATTERN = 300;
@@ -217,6 +223,8 @@ const enc = (s: string) => encodeURIComponent(s).replace(/%20/g, "+");
 export class Crawl {
   readonly id = Math.random().toString(36).slice(2, 10);
   readonly rows = new Map<string, Row>();
+  /** Les dernières lignes de journal, pour un client qui arrive après le départ. */
+  readonly logs: Line[] = [];
   /** Normalised keys declared by the sitemap: the cross-check the rows alone cannot give. */
   readonly sitemapUrls = new Set<string>();
   /** Sitemap files actually read, and the ones that could not be. */
@@ -260,7 +268,25 @@ export class Crawl {
 
   stop(reason = "stopped") {
     if (!this.finishedAt) this.reason = reason;
+    this.say("warn", `arrêt demandé : ${reason}`);
     this.ac.abort();
+  }
+
+  /** Une ligne de journal : stdout côté serveur, flux SSE côté interface. */
+  private say(lvl: Level, msg: string) {
+    const line = log(lvl, msg, `[${this.id}]`);
+    if (!line) return; // niveau filtré : ni stdout, ni interface
+    this.logs.push(line);
+    if (this.logs.length > LOG_CAP) this.logs.shift();
+    this.onEvent({ type: "log", line });
+  }
+
+  /** Une URL traitée. Les cassées sortent au niveau par défaut, les autres en
+      debug : 200 000 lignes « 200 » n'aident personne. */
+  private logRow(r: Row) {
+    const msg = `${r.status || r.error || "sans réponse"} · ${r.url}` +
+      (r.redirect ? ` → ${r.redirect}` : "") + (r.ms ? ` (${r.ms} ms)` : "");
+    this.say(isBroken(r) ? "warn" : "debug", msg);
   }
 
   get running() {
@@ -269,9 +295,17 @@ export class Crawl {
 
   async run() {
     const u = new URL(this.start);
+    this.say(
+      "info",
+      `départ ${this.start} — ${this.opts.concurrency} en parallèle, ${this.opts.maxPages} pages max, ` +
+        `profondeur ${this.opts.maxDepth || "illimitée"}, timeout ${this.opts.timeoutMs} ms`,
+    );
     if (this.opts.respectRobots) {
       this.robots = await Robots.fetch(u.origin, UA, this.ac.signal);
-      if (this.robots.crawlDelay > this.opts.delayMs) this.opts.delayMs = this.robots.crawlDelay;
+      if (this.robots.crawlDelay > this.opts.delayMs) {
+        this.opts.delayMs = this.robots.crawlDelay;
+        this.say("info", `robots.txt impose un délai de ${this.robots.crawlDelay} ms entre deux requêtes`);
+      }
     }
     this.timer = setInterval(() => this.flush(), 250);
     const seed = this.add(u, this.start, "page", 0, null);
@@ -287,6 +321,13 @@ export class Crawl {
       if (this.timer) clearInterval(this.timer);
       this.finishedAt = Date.now();
       if (!this.reason) this.reason = this.capped ? "limite de pages atteinte" : "terminé";
+      const s = this.stats();
+      let broken = 0;
+      for (const r of this.rows.values()) if (isBroken(r)) broken++;
+      this.say(
+        broken ? "warn" : "info",
+        `${this.reason} — ${s.done} URLs explorées, ${broken} cassées, ${Math.round(s.elapsed / 1000)} s`,
+      );
       this.flush();
       this.onEvent({ type: "done", stats: this.stats(), reason: this.reason, sitemap: this.sitemap() });
     }
@@ -319,6 +360,8 @@ export class Crawl {
     });
     this.sitemapSources = found.sources;
     this.sitemapErrors = found.errors;
+    this.say("info", `sitemap : ${found.urls.length} URLs dans ${found.sources.length} fichier(s)`);
+    for (const e of found.errors) this.say("warn", `sitemap : ${e}`);
 
     for (const entry of found.urls) {
       let u: URL;
@@ -368,6 +411,8 @@ export class Crawl {
     if (asset && !this.opts.checkAssets) return null;
     if (kind === "page" && this.opts.maxDepth > 0 && depth > this.opts.maxDepth) return null;
     if (this.rows.size >= this.opts.maxPages) {
+      // Une seule ligne : le plafond est atteint une fois, pas à chaque lien refusé.
+      if (!this.capped) this.say("warn", `limite de ${this.opts.maxPages} pages atteinte, les liens suivants sont ignorés`);
       this.capped++;
       return null;
     }
@@ -382,11 +427,13 @@ export class Crawl {
     if (this.blockPrivate && isPrivateHost(u.hostname)) {
       row.error = "private-host";
       this.counts.failed++;
+      this.logRow(row);
       return row;
     }
     if (kind !== "external" && this.robots && !this.robots.allows(u.pathname + u.search)) {
       row.error = "robots";
       this.counts.failed++;
+      this.logRow(row);
       return row;
     }
     this.queue.push(row);
@@ -484,6 +531,7 @@ export class Crawl {
         this.active--;
         this.doneCount++;
         this.dirty.add(row.url);
+        this.logRow(row);
       }
       if (this.opts.delayMs) await this.wait(this.opts.delayMs);
     }

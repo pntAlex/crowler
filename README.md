@@ -60,6 +60,9 @@ Copiez `.env.example` en `.env` : `docker compose` le lit tout seul.
 | `BLOCK_PRIVATE_IPS` | `1` | refuse les cibles sur réseau privé |
 | `MAX_SESSIONS` | 50 | audits conservés ; au-delà, les plus anciens sont supprimés |
 | `WEBHOOK_MIN_INTERVAL` | 60 | secondes minimum entre deux déclenchements d'un même preset |
+| `LOG_LEVEL` | `info` | verbosité du journal : `debug` (une ligne par URL), `info`, `warn`, `error`, `silent` |
+| `LOG_MAX_SIZE` | `10m` | taille d'un fichier de journal avant rotation, tenue par Docker |
+| `LOG_MAX_FILE` | 5 | fichiers de journal gardés par la rotation |
 | `DOMAINS` | vide | domaine public : label Caddy, et base des liens dans les notifications ; sans proxy TLS, l'adresse complète (`http://localhost:3000`) |
 | `TZ` | `Europe/Paris` | fuseau des dates affichées dans les notifications ; l'image est en UTC |
 
@@ -167,7 +170,7 @@ Le dossier `data/` est ignoré par git et par le build Docker.
 | Touche | Effet |
 |---|---|
 | `N` | nouvel audit |
-| `⌘ Entrée` (`Ctrl Entrée` hors Mac) | lance l'audit, depuis n'importe quel champ |
+| `⌘ Entrée` (`Ctrl Entrée` hors Mac) | lance l'audit — enregistre, dans l'espace d'un preset |
 | `/` | filtre les URLs |
 | `1` à `4` | change d'onglet ; sur les onglets, `←` et `→` aussi |
 | `↑` `↓` puis `Entrée` | parcourent l'historique, ouvrent l'audit |
@@ -186,26 +189,43 @@ chiffres se lisent sur la touche physique : `1` est donc la touche `&` d'un clav
 Un preset, c'est la cible et ses réglages enregistrés sous un nom. Il sert à deux choses :
 relancer le même audit sans le reconfigurer, et le déclencher de l'extérieur par webhook.
 
-Dans la section « Presets » : entrez un nom et cliquez **Enregistrer**. Le preset reprend l'URL
-du formulaire et l'ensemble des réglages affichés au moment de l'enregistrement. Le sélecteur
-**Charger** recharge un preset dans le formulaire, prêt à lancer ou à modifier.
+Les presets ont leur espace : la barre de gauche les liste au-dessus de l'historique, chacun avec
+sa cible et la date de son dernier audit. Cliquer sur un preset ouvre **sa page** — ses réglages,
+son déclenchement, et la liste des audits qu'il a lancés. Cliquer sur un audit ouvre la sienne.
+L'interface n'affiche jamais les deux à la fois : ce qu'on modifie appartient toujours à ce que
+l'entête nomme.
 
-À la **création**, la section « Webhook » s'ouvre sur le jeton, déjà placé dans la commande
+Le `+` de la ligne « Presets » enregistre ce qui est à l'écran : donnez un nom, et la cible et les
+réglages affichés — ceux d'un audit qu'on vient de régler, par exemple — deviennent les siens.
+
+Sur la page d'un preset :
+
+- **Enregistrer** écrit la cible et les réglages affichés. Tant qu'ils diffèrent de ce qui est
+  enregistré, un bandeau « modifications non enregistrées » le dit, et **Annuler** les jette.
+  Rien d'autre n'écrit dans un preset : modifier les réglages d'un audit passé ne peut plus
+  toucher le preset qui l'a lancé.
+- **Lancer maintenant** démarre l'audit du preset **tel qu'il est enregistré** — le serveur le
+  relit, exactement comme pour un appel webhook. Des modifications non enregistrées ne partiraient
+  donc pas : l'interface le signale avant de lancer. L'audit obtenu porte le nom du preset, et
+  rejoint la liste de ses audits.
+- **Ses audits** liste ce que le preset a produit, par l'interface comme par webhook, du plus
+  récent au plus ancien. Une ligne ouvre l'audit.
+- **Supprimer** invalide le jeton. Les audits déjà enregistrés, eux, restent dans l'historique.
+
+Réenregistrer un preset met à jour sa cible et ses réglages **sans toucher au jeton** : les
+webhooks déjà en place chez l'appelant continuent de marcher.
+
+À la **création**, la section « Déclenchement » s'ouvre sur le jeton, déjà placé dans la commande
 `curl` prête à coller dans un pipeline. Il n'est montré qu'une fois : seule son empreinte SHA-256
 est conservée, il est impossible de le retrouver ensuite. Hors de ce moment, la commande reste
-affichée pour le preset chargé, avec `$CROWLER_TOKEN` à la place du jeton. Perdu, celui-ci se
-remplace avec **Régénérer le jeton** — l'ancien cesse immédiatement de fonctionner.
+affichée avec `$CROWLER_TOKEN` à la place du jeton. Perdu, celui-ci se remplace avec **Régénérer
+le jeton** — l'ancien cesse immédiatement de fonctionner.
 
-Réenregistrer un preset existant met à jour sa cible et ses réglages **sans toucher au jeton** :
-les webhooks déjà en place chez l'appelant continuent de marcher. Supprimer le preset invalide
-son jeton.
-
-Dans la même section « Webhook », le champ **Notification Google Chat** attache un espace au
-preset chargé : ses audits déclenchés par webhook y annoncent leur départ et leur bilan (voir
+Dans la même section, le champ **Notification Google Chat** attache un espace au preset : ses
+audits y annoncent leur départ et leur bilan (voir
 [Notifications Google Chat](#notifications-google-chat)). Son bouton **Enregistrer** ne change que
-la notification, pas la cible ni les réglages du preset. Comme le jeton, l'URL ne se relit pas —
-elle porte ses secrets dans sa query string. Réenregistrer le preset la conserve ; **Retirer**
-l'efface.
+la notification, pas la cible ni les réglages. Comme le jeton, l'URL ne se relit pas — elle porte
+ses secrets dans sa query string. Réenregistrer le preset la conserve ; **Retirer** l'efface.
 
 Les presets vivent dans un seul fichier, `presets.json` sous `DATA_DIR`, à côté des dossiers
 d'audit. Maximum 25.
@@ -227,7 +247,8 @@ viser un autre site. Le jeton se lit dans l'en-tête `Authorization` et nulle pa
 en query string il finirait dans les logs d'accès du proxy et dans l'historique du navigateur.
 
 L'audit démarré est un audit comme les autres : il apparaît dans la barre de gauche, marqué du
-nom de son preset, se suit en direct et s'exporte en CSV.
+nom de son preset, se suit en direct et s'exporte en CSV. Il rejoint aussi « Ses audits » sur la
+page du preset, au milieu de ceux lancés depuis l'interface.
 
 | Réponse | Signification |
 |---|---|
@@ -257,15 +278,15 @@ départ de l'audit, une à son bilan.
 L'URL s'obtient dans l'espace Chat, menu de l'espace → *Applications et intégrations* →
 *Webhooks* → *Ajouter un webhook*. Elle ressemble à
 `https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…` et se colle telle quelle dans le
-champ **Notification Google Chat** de la section « Webhook », le preset chargé.
+champ **Notification Google Chat** de la section « Déclenchement », sur la page du preset.
 
 La carte de départ dit le site, le preset et l'heure. Celle de fin ajoute le nombre d'URLs
 explorées, la durée, le décompte des liens possiblement cassés, les cinq premiers avec leur
 statut, et deux boutons de téléchargement : l'export des liens cassés et l'export complet.
 
-**Un audit lancé à la main depuis l'interface ne notifie pas.** La notification accompagne le
-déclenchement automatique — un post-déploiement qui appelle `/api/hooks/run` — pas le travail
-interactif, où l'écran montre déjà tout.
+**Un audit lancé à la main depuis l'interface ne notifie pas**, « Lancer maintenant » sur la page
+d'un preset compris. La notification accompagne le déclenchement automatique — un post-déploiement
+qui appelle `/api/hooks/run` — pas le travail interactif, où l'écran montre déjà tout.
 
 Les boutons de téléchargement ont besoin de savoir sous quelle adresse le service est joignable :
 c'est `DOMAINS`, lue comme Caddy lit une adresse de site — sans schéma, les liens partent en

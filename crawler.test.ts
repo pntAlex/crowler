@@ -371,6 +371,30 @@ test("l'interface reçoit le referer arrivé sur la redirection après l'envoi d
   expect((last.f as { from: string }[]).map((f) => f.from)).toEqual([origin + "/rubrique/", origin + "/rubrique/plus"]);
 });
 
+test("le journal du crawl sort le départ, les liens cassés et le bilan", async () => {
+  const lines: { lvl: string; msg: string }[] = [];
+  const c = new Crawl(
+    origin + "/",
+    { respectRobots: false, useSitemap: false, timeoutMs: 2500 },
+    (e) => {
+      if (e.type === "log") lines.push(e.line);
+    },
+    false,
+  );
+  // Le niveau vient de l'environnement, et `bun test` le met à « silent ».
+  process.env.LOG_LEVEL = "info";
+  try {
+    await c.run();
+  } finally {
+    delete process.env.LOG_LEVEL;
+  }
+  expect(lines.some((l) => l.lvl === "info" && l.msg.startsWith("départ " + origin + "/"))).toBe(true);
+  expect(lines.some((l) => l.lvl === "warn" && l.msg.includes("404 · " + origin + "/missing"))).toBe(true);
+  expect(lines.some((l) => l.msg.startsWith("terminé —"))).toBe(true);
+  // Les lignes gardées pour un client qui se branche en route sont les mêmes.
+  expect(c.logs.length).toBe(lines.length);
+});
+
 test("une URL encore en file n'est pas comptée comme cassée", () => {
   const base = { url: "u", kind: "page" as const, asset: false, depth: 0, ms: 0, bytes: 0, type: "", refs: [], refCount: 0 };
   expect(isBroken({ ...base, status: 0 })).toBe(false);              // découverte, pas encore requêtée

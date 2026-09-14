@@ -10,7 +10,7 @@ const TITLE = document.title;
 const IDLE = '<p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>';
 const WHEN = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 const CHAT_PLACEHOLDER = "https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…";
-const SECS = ["sec-presets", "sec-cfg", "sec-scope", "sec-hook"];
+const SECS = ["sec-cfg", "sec-scope", "sec-hook"];
 const TABS = [["tab-broken", "broken"], ["tab-all", "all"], ["tab-orphans", "orphans"], ["tab-synth", "synth"]];
 /* ⌘ sur Mac, Ctrl ailleurs : l'aide nomme la touche que l'utilisateur a sous les doigts. */
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘" : "Ctrl";
@@ -18,6 +18,7 @@ const MOD = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘" : "Ctrl";
 const rows = new Map();      // url -> wire row {u,s,k,d,m,b,t,n,r?,e?,f?,seo?}
 let sessions = [];           // en-têtes d'audits, du plus récent au plus ancien
 let presetList = [];
+let pre = null;              // preset ouvert : son nom, "" pendant une création, null hors de l'espace preset
 const picked = new Set();    // audits sélectionnés dans l'historique, pour une suppression groupée
 const shut = new Set();      // liens cassés dont l'utilisateur a replié les referers
 let anchor = null;           // extrémité fixe d'une sélection par plage (Maj)
@@ -55,12 +56,22 @@ const label = (r) =>
   : "échec";
 
 /* ---- lancement ---- */
-$("form").addEventListener("submit", async (e) => {
+$("form").addEventListener("submit", (e) => {
   e.preventDefault();
+  // Le formulaire sert les deux espaces : dans celui d'un preset, il l'enregistre.
+  if (space() === "preset") return savePreset();
   if (es || starting) return; // un crawl tourne déjà, ou est en train de démarrer
-  const opts = readOpts();
-  askNotify();
+  start({ url: $("url").value.trim(), opts: readOpts() });
+});
 
+/**
+ * Démarre un crawl et bascule sur son espace. Le corps porte soit une cible et
+ * des réglages, soit le seul nom d'un preset — le serveur relit alors ce que le
+ * preset enregistre, si bien que l'audit obtenu est celui qu'il annonce.
+ */
+async function start(body) {
+  askNotify();
+  space("audit");
   reset();
   busy(true);
   starting = true;
@@ -68,7 +79,7 @@ $("form").addEventListener("submit", async (e) => {
     const res = await fetch("/api/crawl", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: $("url").value.trim(), opts }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "démarrage impossible");
@@ -89,7 +100,7 @@ $("form").addEventListener("submit", async (e) => {
     notice = '<p class="note"><b class="err">Audit non démarré</b>' + esc(err.message) + "</p>";
     render();
   }
-});
+}
 
 /** Les réglages du formulaire, dans la forme attendue par l'API. Partagé par le
     lancement et par l'enregistrement d'un preset, pour qu'ils ne divergent pas. */
@@ -165,6 +176,7 @@ async function loadSessions() {
     return; // le serveur répondra au prochain rafraîchissement
   }
   renderSide();
+  renderPres(); // la ligne d'un preset dit son dernier audit : il vient d'ici
 }
 
 const entry = (m) =>
@@ -351,11 +363,24 @@ function ask(msg, yes = "") {
 // Un clic hors de la boîte l'annule, comme Échap.
 $("ask").addEventListener("click", (e) => { if (e.target === $("ask")) $("ask").close(); });
 
-/* ---- presets ----
-   Un preset porte la cible et ses réglages sous un nom. Il se recharge dans le
-   formulaire d'un clic, et se déclenche de l'extérieur avec son jeton : la
-   section Webhook en donne la commande et la notification Google Chat. */
-const selected = () => presetList.find((x) => x.name === $("preset-sel").value);
+/* ---- espace presets ----
+   Un preset porte une cible et ses réglages sous un nom, et se déclenche de
+   l'extérieur avec son jeton. Il a son espace : la barre de gauche navigue
+   entre l'audit et le preset, qui se partagent le formulaire de réglages —
+   c'est le même objet à décrire — mais jamais en même temps. L'espace ouvert
+   dit donc toujours à qui appartient ce qu'on tape, et « Enregistrer » n'existe
+   que dans celui du preset : modifier un audit passé ne peut plus toucher le
+   preset qui l'a lancé. */
+const preOf = (name) => presetList.find((x) => x.name === name) || null;
+
+/** L'espace affiché. Le CSS masque ce qui n'est pas le sien (.aud-only,
+    .pre-only) : il n'y a pas dix `hidden` à tenir à jour ici. */
+function space(v) {
+  if (!v) return document.body.dataset.space;
+  document.body.dataset.space = v;
+  if (v === "audit" && pre !== null) { pre = null; renderPres(); }
+  return v;
+}
 
 async function loadPresets() {
   try {
@@ -363,42 +388,118 @@ async function loadPresets() {
   } catch {
     return; // le serveur répondra au prochain rafraîchissement
   }
-  renderPresets();
+  renderPres();
+  if (pre && !preOf(pre)) blank(false); // supprimé ailleurs : son espace n'a plus d'objet
 }
 
-function renderPresets() {
-  const sel = $("preset-sel");
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— aucun —</option>' +
-    presetList.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
-  sel.value = presetList.some((p) => p.name === cur) ? cur : "";
-  presetTools();
+/** Les audits qu'un preset a lancés. L'historique porte déjà le nom de son
+    déclencheur : ce regroupement ne demande rien au serveur. */
+const runsOf = (name) => sessions.filter((m) => m.preset === name);
+
+function preEntry(p) {
+  const last = runsOf(p.name)[0];
+  return `<div class="pre" role="button" tabindex="0" data-name="${esc(p.name)}"` +
+    `${p.name === pre ? ' aria-current="true"' : ""}>` +
+    `<span class="ses-main">` +
+      `<span class="ses-top"><span class="ses-host">${esc(p.name)}</span>` +
+        `<span class="ses-when">${last ? esc(WHEN.format(new Date(last.startedAt))) : "jamais lancé"}</span></span>` +
+      `<span class="ses-sub">${p.chat ? '<i class="ses-tag">Chat</i>' : ""}` +
+        `<span class="ses-sum">${esc(short(p.url))}</span></span>` +
+    `</span>` +
+  `</div>`;
+}
+
+function renderPres() {
+  $("pre-list").innerHTML = presetList.length
+    ? presetList.map(preEntry).join("")
+    : '<p class="side-empty">Aucun preset. Réglez un audit, puis « + » pour l’enregistrer : il se relance d’un clic et se déclenche par webhook.</p>';
 }
 
 /**
- * Le webhook ne vise que le preset sélectionné. Le champ de la notification est
- * vidé au passage : son URL n'est jamais renvoyée par l'API, la laisser à
- * l'écran ferait croire qu'elle a été relue.
+ * Ouvre l'espace d'un preset. Un nom vide ouvre une création : le formulaire
+ * garde ce qu'il porte, l'audit affiché sert donc de brouillon au preset.
  */
-function presetTools() {
-  const p = selected();
-  $("preset-del").disabled = !p;
-  $("hook-none").hidden = !!p;
-  $("hook").hidden = !p;
-  $("hook-name").textContent = p ? p.name : "";
-  $("chat-state").textContent = p ? (p.chat ? "— active" : "— aucune") : "";
-  $("preset-chat-del").disabled = !p?.chat;
+function openPreset(name) {
+  const p = name ? preOf(name) : null;
+  if (name && !p) return;
+  // On quitte l'audit : comme en changeant d'entrée d'historique, on se débranche.
+  if (es) { es.close(); es = null; }
+  busy(false);
+  pre = p ? p.name : "";
+  space("preset");
+  say("pre-msg", "");
+  say("hook-msg", "");
+  curl(pre);
+  if (p) applyOpts({ start: p.url, opts: p.opts });
+  $("pre-name").value = "";
+  renderPre();
+  renderPres();
+  if (p) $("url").blur();
+  else $("pre-name").focus();
+}
+
+/** L'espace du preset ouvert : son entête, ses actions, son webhook, ses audits. */
+function renderPre() {
+  const p = pre ? preOf(pre) : null;
+  const fresh = !p; // preset en cours de création : ni jeton, ni audits, ni notification
+  $("crumb").innerHTML = fresh
+    ? '<h1>Nouveau preset</h1><p class="crumb-m">Nommez-le : il prendra la cible et les réglages affichés.</p>'
+    : `<h1>${esc(p.name)}</h1><p class="crumb-m"><span class="badge" data-s="pre">preset</span>` +
+      `<span>${esc(short(p.url))}</span>` + (p.chat ? '<i class="ses-tag">Google Chat</i>' : "") + "</p>";
+  $("pre-acts").hidden = false;
+  $("pre-run").disabled = fresh;
+  $("pre-del").disabled = fresh;
+  $("pre-name").hidden = !fresh;
+  $("pre-save").textContent = fresh ? "Créer" : "Enregistrer";
+  $("hook").hidden = fresh;
+  $("hook-new").hidden = !fresh;
+  $("chat-state").textContent = fresh ? "" : p.chat ? "— active" : "— aucune";
+  $("preset-chat-del").disabled = fresh || !p.chat;
   $("preset-chat").value = "";
   $("preset-chat").placeholder = p?.chat ? "notification enregistrée — collez une URL pour la remplacer" : CHAT_PLACEHOLDER;
-  if (!p) curl("");
-  else if ($("preset-curl").dataset.name !== p.name) curl(p.name);
+  renderRuns(p);
+  dirty();
   hints();
+}
+
+function renderRuns(p) {
+  $("pre-runs").hidden = !p;
+  if (!p) return;
+  const list = runsOf(p.name);
+  $("pre-runs-n").textContent = NUM.format(list.length);
+  $("pre-runs-list").innerHTML = list.length
+    ? list.map((m) =>
+        `<button class="run" type="button" data-id="${esc(m.id)}">` +
+          `<i class="dot" data-s="${state(m)}"></i>` +
+          `<span class="run-when">${esc(WHEN.format(new Date(m.startedAt)))}</span>` +
+          `<span class="run-sum">${esc(summary(m))}</span>` +
+          `<svg class="i run-go" aria-hidden="true"><use href="#i-chev"/></svg>` +
+        `</button>`).join("")
+    : '<p class="runs-empty">Aucun audit lancé par ce preset pour l’instant. « Lancer maintenant », ou l’appel webhook ci-dessus.</p>';
+}
+
+/* Les réglages dans un ordre stable : de quoi comparer ce qui est à l'écran à
+   ce qui est enregistré sans dépendre de l'ordre des clés rendu par le serveur. */
+const sig = (url, o) => JSON.stringify([
+  url, ...BOOLS.map((k) => !!o[k]), ...NUMS.map((k) => Number(o[k])), ...STRS.map((k) => o[k] || ""),
+  (Array.isArray(o.exclude) ? o.exclude : String(o.exclude || "").split("\n")).map((t) => t.trim()).filter(Boolean).join("\n"),
+]);
+
+/** Ce que l'ancien formulaire ne disait jamais : si ce qu'on a sous les yeux est
+    enregistré. Tant que ça clignote ici, le preset sur le disque n'a pas bougé. */
+function dirty() {
+  if (space() !== "preset") return false;
+  const p = pre ? preOf(pre) : null;
+  const changed = !p || sig($("url").value.trim(), readOpts()) !== sig(p.url, p.opts);
+  $("dirty").hidden = !p || !changed;
+  $("pre-save").disabled = !!p && !changed;
+  return changed;
 }
 
 function say(box, text, err) {
   const el = $(box);
   el.hidden = !text;
-  el.className = "msg" + (err ? " err" : "");
+  el.classList.toggle("err", !!err);
   el.textContent = text || "";
 }
 
@@ -408,7 +509,6 @@ function say(box, text, err) {
 function curl(name, token) {
   const box = $("preset-curl");
   $("preset-key").hidden = !token;
-  box.dataset.name = name;
   box.value = !name ? "" :
     `curl -X POST ${location.origin}/api/hooks/run \\\n` +
     `  -H "Authorization: Bearer ${token || "$CROWLER_TOKEN"}" \\\n` +
@@ -435,46 +535,93 @@ async function putPreset(body) {
   return data;
 }
 
-$("preset-sel").addEventListener("change", () => {
-  curl(""); // un jeton affiché ne survit pas à un changement de preset
-  say("preset-msg", "");
-  say("hook-msg", "");
-  presetTools();
-  const p = selected();
-  if (!p) return;
-  $("preset-name").value = p.name;
-  applyOpts({ start: p.url, opts: p.opts }); // le formulaire porte le preset, prêt à lancer
-});
-
-$("preset-save").addEventListener("click", async () => {
-  const name = ($("preset-name").value.trim() || $("preset-sel").value).trim();
-  if (!name) return say("preset-msg", "Donnez un nom au preset.", true);
-  curl("");
+/** Crée le preset, ou enregistre les modifications de celui qui est ouvert. */
+async function savePreset() {
+  const name = pre || $("pre-name").value.trim();
+  if (!name) {
+    say("pre-msg", "Donnez un nom au preset.", true);
+    return $("pre-name").focus();
+  }
   try {
     // chatUrl vide : le serveur garde la notification déjà enregistrée.
     const data = await putPreset({ name, url: $("url").value.trim(), opts: readOpts(), chatUrl: "" });
+    const fresh = !pre;
+    pre = name;
     await loadPresets();
-    $("preset-sel").value = name;
-    presetTools();
-    say("hook-msg", "");
-    if (!data.token) return say("preset-msg", `Preset « ${name} » mis à jour. Son jeton reste valable.`);
-    say("preset-msg", `Preset « ${name} » créé. Son jeton s’affiche une seule fois, dans la section Webhook.`);
-    showToken(name, data.token);
+    // La cible revient normalisée par le serveur : sans cette relecture, le
+    // formulaire resterait éternellement « modifié » d'un slash final.
+    applyOpts({ start: data.preset.url, opts: data.preset.opts });
+    renderPre();
+    renderPres();
+    say("pre-msg", fresh ? `Preset « ${name} » créé.` : `Preset « ${name} » enregistré.`);
+    if (data.token) showToken(name, data.token);
   } catch (err) {
-    say("preset-msg", err.message, true);
+    say("pre-msg", err.message, true);
   }
+}
+
+/* L'étiquette d'un audit déclenché ramène à son preset : le lien qui manquait,
+   dans l'autre sens que « Ses audits ». */
+$("crumb").addEventListener("click", (e) => {
+  const b = e.target.closest(".go-pre");
+  if (!b) return;
+  if (preOf(b.dataset.name)) openPreset(b.dataset.name);
+  else ask(`Le preset « ${b.dataset.name} » n’existe plus. L’audit, lui, reste consultable.`);
+});
+
+$("pre-new").addEventListener("click", () => openPreset(""));
+$("pre-undo").addEventListener("click", () => openPreset(pre));
+$("form").addEventListener("input", () => dirty());
+
+$("pre-list").addEventListener("click", (e) => {
+  const o = e.target.closest(".pre");
+  if (o) openPreset(o.dataset.name);
+});
+$("pre-list").addEventListener("keydown", (e) => {
+  const o = e.target.closest(".pre");
+  if (!o || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  openPreset(o.dataset.name);
+});
+
+$("pre-runs-list").addEventListener("click", (e) => {
+  const o = e.target.closest(".run");
+  if (o) show(o.dataset.id);
+});
+
+/* Lancer, c'est lancer ce qui est enregistré : le serveur relit le preset. Des
+   modifications non enregistrées ne partiraient donc pas — on le dit avant. */
+$("pre-run").addEventListener("click", async () => {
+  const p = pre ? preOf(pre) : null;
+  if (!p || es || starting) return;
+  if (dirty() && !(await ask(
+    `« ${p.name} » a des modifications non enregistrées : l’audit partira avec les réglages enregistrés. Lancer quand même ?`,
+    "Lancer",
+  ))) return;
+  start({ preset: p.name });
+});
+
+$("pre-del").addEventListener("click", async () => {
+  const p = pre ? preOf(pre) : null;
+  if (!p) return;
+  if (!(await ask(
+    `Supprimer le preset « ${p.name} » ? Son jeton cessera de fonctionner. Les audits qu’il a lancés restent dans l’historique.`,
+    "Supprimer",
+  ))) return;
+  await fetch(`/api/presets/${encodeURIComponent(p.name)}`, { method: "DELETE" }).catch(() => {});
+  blank(false);
+  await loadPresets();
 });
 
 $("preset-token").addEventListener("click", async () => {
-  const name = $("preset-sel").value;
-  if (!name) return;
-  if (!(await ask(`Régénérer le jeton de « ${name} » ? L’ancien cessera immédiatement de fonctionner.`, "Régénérer"))) return;
+  if (!pre) return;
+  if (!(await ask(`Régénérer le jeton de « ${pre} » ? L’ancien cessera immédiatement de fonctionner.`, "Régénérer"))) return;
   try {
-    const res = await fetch(`/api/presets/${encodeURIComponent(name)}/token`, { method: "POST" });
+    const res = await fetch(`/api/presets/${encodeURIComponent(pre)}/token`, { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "rotation impossible");
-    say("hook-msg", `Nouveau jeton pour « ${name} ». L’ancien ne fonctionne plus.`);
-    showToken(name, data.token);
+    say("hook-msg", `Nouveau jeton pour « ${pre} ». L’ancien ne fonctionne plus.`);
+    showToken(pre, data.token);
   } catch (err) {
     say("hook-msg", err.message, true);
   }
@@ -482,15 +629,16 @@ $("preset-token").addEventListener("click", async () => {
 
 /* La notification se change seule : le preset est renvoyé avec la cible et les
    réglages qu'il porte déjà, pas avec ceux du formulaire, peut-être modifiés
-   depuis son chargement. */
+   depuis son ouverture. */
 $("chat-save").addEventListener("click", async () => {
-  const p = selected();
+  const p = pre ? preOf(pre) : null;
   if (!p) return;
   const chatUrl = $("preset-chat").value.trim();
   if (!chatUrl) return say("hook-msg", "Collez d’abord l’URL du webhook Google Chat.", true);
   try {
     await putPreset({ name: p.name, url: p.url, opts: p.opts, chatUrl });
     await loadPresets();
+    renderPre();
     say("hook-msg", `Notification enregistrée pour « ${p.name} ».`);
   } catch (err) {
     say("hook-msg", err.message, true);
@@ -498,29 +646,18 @@ $("chat-save").addEventListener("click", async () => {
 });
 
 $("preset-chat-del").addEventListener("click", async () => {
-  const name = $("preset-sel").value;
-  if (!name) return;
-  if (!(await ask(`Retirer la notification Google Chat de « ${name} » ? Ses audits ne préviendront plus personne.`, "Retirer"))) return;
+  const p = pre ? preOf(pre) : null;
+  if (!p) return;
+  if (!(await ask(`Retirer la notification Google Chat de « ${p.name} » ? Ses audits ne préviendront plus personne.`, "Retirer"))) return;
   try {
-    const res = await fetch(`/api/presets/${encodeURIComponent(name)}/chat`, { method: "DELETE" });
+    const res = await fetch(`/api/presets/${encodeURIComponent(p.name)}/chat`, { method: "DELETE" });
     if (!res.ok) throw new Error((await res.json()).error || "retrait impossible");
     await loadPresets();
-    say("hook-msg", `Notification retirée de « ${name} ».`);
+    renderPre();
+    say("hook-msg", `Notification retirée de « ${p.name} ».`);
   } catch (err) {
     say("hook-msg", err.message, true);
   }
-});
-
-$("preset-del").addEventListener("click", async () => {
-  const name = $("preset-sel").value;
-  if (!name) return;
-  if (!(await ask(`Supprimer le preset « ${name} » ? Son jeton cessera de fonctionner.`, "Supprimer"))) return;
-  await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: "DELETE" }).catch(() => {});
-  $("preset-sel").value = "";
-  $("preset-name").value = "";
-  await loadPresets();
-  say("hook-msg", "");
-  say("preset-msg", `Preset « ${name} » supprimé.`);
 });
 
 $("preset-copy").addEventListener("click", async () => {
@@ -535,13 +672,11 @@ $("preset-copy").addEventListener("click", async () => {
 });
 
 // Entrée valide le champ où l'on tape ; ⌘/Ctrl+Entrée reste réservé au lancement.
-for (const [field, button] of [["preset-name", "preset-save"], ["preset-chat", "chat-save"]]) {
-  $(field).addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" || e.metaKey || e.ctrlKey) return;
-    e.preventDefault();
-    $(button).click();
-  });
-}
+$("preset-chat").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.metaKey || e.ctrlKey) return;
+  e.preventDefault();
+  $("chat-save").click();
+});
 
 /** Charge un audit : reprise en direct s'il tourne encore, relecture sinon. */
 async function show(sid) {
@@ -559,6 +694,7 @@ async function show(sid) {
     return loadSessions();
   }
   if (n !== opening) return; // une ouverture plus récente l'emporte
+  space("audit");
   id = m.id; target = m.start; stats = m.stats; filter = null; notice = null; shown = m;
   cursor = m.id; // Tab ramène dans l'historique sur l'audit ouvert
   smInfo = m.sitemap || null;
@@ -575,9 +711,13 @@ async function show(sid) {
   if (live(m)) {
     busy(true);
     $("panel").innerHTML = '<p class="note">Reprise de l’audit en cours…</p>';
-    return connect();  // le snapshot SSE rapatrie les lignes déjà collectées
+    logIdle("Reprise du journal…");
+    logs(true);
+    return connect();  // le snapshot SSE rapatrie les lignes déjà collectées et le journal
   }
   busy(false);
+  // Le journal n'est pas archivé avec l'audit : il vit le temps du crawl.
+  logIdle("Audit terminé : son journal reste sur la sortie du serveur.");
   $("panel").innerHTML = '<p class="note">Lecture de l’audit…</p>';
   await replay(sid);
   if (sid !== id) return; // l'utilisateur a changé d'audit entre-temps
@@ -632,18 +772,22 @@ function crumb(m) {
     ? `<h1>${esc(m.host)}</h1>` +
       `<p class="crumb-m"><span class="badge" data-s="${tone(m)}">${esc(live(m) ? "en cours" : m.reason || "terminé")}</span>` +
       `<span>${esc(WHEN.format(new Date(m.startedAt)))}</span>` +
-      (m.preset ? `<i class="ses-tag">${esc(m.preset)}</i>` : "") + `</p>`
+      (m.preset ? `<button class="ses-tag go-pre" type="button" data-name="${esc(m.preset)}"` +
+        ` title="Ouvrir le preset">${esc(m.preset)}</button>` : "") + `</p>`
     : '<h1>Nouvel audit</h1><p class="crumb-m">Explorez un site, relevez chaque lien cassé et la page qui le contient.</p>';
 }
 
 /** Écran vide, prêt pour un nouvel audit. */
 function blank(focus = true) {
   if (es) { es.close(); es = null; }
+  space("audit");
   id = null; target = ""; stats = null; filter = null; halting = false; notice = null; smInfo = null; shown = null;
   rows.clear();
   shut.clear();
   busy(false);
   tools(false);
+  logs(false);
+  logIdle("Aucun crawl en cours.");
   crumb(null);
   renderSide();
   $("legend").querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
@@ -667,6 +811,8 @@ function reset() {
   $("rd-unit").textContent = "URLs";
   $("rd-rest").innerHTML = "";
   $("panel").innerHTML = '<p class="note">Résolution de robots.txt et de la page de départ…</p>';
+  logIdle("En attente des premières lignes…");
+  logs(true); // un crawl qui démarre ouvre son journal
   paint();
 }
 
@@ -674,6 +820,9 @@ function connect() {
   es = new EventSource(`/api/crawl/${id}/events`);
   es.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
+    // Le journal ne touche ni aux lignes ni aux compteurs : rien à redessiner.
+    if (m.type === "log") return logLine(m.line);
+    if (m.type === "logs") { if (m.lines.length) { logN = 0; for (const l of m.lines) logLine(l); } return; }
     if (m.rows) for (const r of m.rows) rows.set(r.u, r);
     if (m.stats) stats = m.stats;
     if (m.type === "done") {
@@ -687,6 +836,43 @@ function connect() {
   // Le job a été évincé de la mémoire : l'audit reste lisible sur disque.
   es.addEventListener("gone", () => { es.close(); es = null; if (id) show(id); });
   es.onerror = () => { if (es && es.readyState === 2) { es = null; busy(false); } };
+}
+
+/* ---- journal du crawl ----
+   Les lignes arrivent par le même flux SSE que les résultats. Elles ne sont
+   gardées nulle part côté client : le journal complet est sur la sortie du
+   conteneur, celui-ci n'est que la fenêtre du crawl qu'on regarde. */
+const LOG_ROWS = 500; // lignes tenues dans le panneau, comme MAX_TABLE_ROWS pour les tableaux
+const LOG_TIME = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+let logN = 0;
+
+function logs(on) {
+  $("logs").hidden = !on;
+  $("logs-btn").setAttribute("aria-expanded", String(on));
+}
+$("logs-btn").addEventListener("click", () => logs($("logs").hidden));
+$("logs-close").addEventListener("click", () => logs(false));
+
+/** Panneau vide, avec ce qu'il faut lire à la place. */
+function logIdle(msg) {
+  logN = 0;
+  $("logs-l").innerHTML = `<li class="empty">${esc(msg)}</li>`;
+  $("logs-n").textContent = "";
+}
+
+function logLine(l) {
+  const box = $("logs-l");
+  if (!logN) box.innerHTML = "";
+  // On ne recolle en bas que si l'utilisateur y était : sinon il lit plus haut.
+  const stuck = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const li = document.createElement("li");
+  li.className = l.lvl;
+  li.innerHTML = `<time>${esc(LOG_TIME.format(new Date(l.at)))}</time><span>${esc(l.msg)}</span>`;
+  box.append(li);
+  logN++;
+  while (box.childElementCount > LOG_ROWS) box.firstElementChild.remove();
+  $("logs-n").textContent = `${NUM.format(logN)} ligne${logN > 1 ? "s" : ""}`;
+  if (stuck) box.scrollTop = box.scrollHeight;
 }
 
 /* ---- dessin ----
@@ -1204,17 +1390,20 @@ document.addEventListener("keydown", (e) => {
   }
   if (mod) return;
   if (e.key === "/") {
-    if ($("rail").hidden || $("search").hidden) return;
+    if ($("rail").hidden || $("search").hidden || space() !== "audit") return;
     e.preventDefault();
     $("q").focus();
     $("q").select();
   } else if (e.key === "n" || e.key === "N") {
     e.preventDefault();
     blank();
+  } else if ((e.key === "j" || e.key === "J") && !$("acts").hidden && space() === "audit") {
+    e.preventDefault();
+    logs($("logs").hidden);
   } else if (e.key === "?") {
     e.preventDefault();
     $("keys").open = !$("keys").open;
-  } else if (/^Digit[1-4]$/.test(e.code) && !$("rail").hidden) {
+  } else if (/^Digit[1-4]$/.test(e.code) && !$("rail").hidden && space() === "audit") {
     e.preventDefault();
     tab(TABS[Number(e.code.slice(5)) - 1][1]);
   }
@@ -1233,18 +1422,16 @@ function hints() {
   const n = $("exclude").value.split("\n").filter((t) => t.trim()).length;
   const sm = $("sitemapUrl").value.trim() ? " · sitemap imposé" : $("useSitemap").checked ? "" : " · sitemap ignoré";
   hint("h-scope", (n ? `${n} motif${n > 1 ? "s" : ""} d’exclusion` : "aucune exclusion") + sm, n > 0 || !!sm);
-  const p = selected();
-  const saved = presetList.length;
-  hint("h-presets", p ? `« ${p.name} » chargé` : saved ? `${saved} enregistré${saved > 1 ? "s" : ""}` : "aucun", !!p);
-  hint("h-hook", p ? `« ${p.name} »${p.chat ? " · Google Chat" : ""}` : "aucun preset chargé", !!(p && p.chat));
+  const p = pre ? preOf(pre) : null;
+  hint("h-hook", !p ? "à l’enregistrement" : p.chat ? "webhook · Google Chat" : "webhook", !!(p && p.chat));
 }
 
 function hint(el, text, on) {
   $(el).textContent = text;
   $(el).toggleAttribute("data-on", on);
 }
-$("cfgs").addEventListener("input", () => hints());
-$("cfgs").addEventListener("change", () => hints());
+$("cfgs").addEventListener("input", () => { hints(); dirty(); });
+$("cfgs").addEventListener("change", () => { hints(); dirty(); });
 
 /* ---- préférences ----
    Deux préférences de ce navigateur, rien de plus : les sections ouvertes et

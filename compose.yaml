@@ -29,6 +29,9 @@ services:
       # L'image est en UTC : sans ce réglage, l'heure annoncée dans une
       # notification n'est pas celle de qui la lit.
       TZ: ${TZ:-Europe/Paris}
+      # `debug` ajoute une ligne par URL visitée : utile pour comprendre un
+      # crawl, à la rotation près (voir `logging` plus bas). `silent` coupe tout.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
 
     # L'historique des audits : sans ce volume, recréer le conteneur repart
     # d'une ardoise vide.
@@ -36,6 +39,15 @@ services:
       - crowler-data:/app/data
 
     # Le sondage de santé est déclaré dans le Dockerfile et hérité ici.
+
+    # Le journal part sur stdout : c'est Docker qui le garde et le fait tourner,
+    # le conteneur n'écrit aucun fichier de log. Sans ces bornes, un crawl en
+    # LOG_LEVEL=debug remplirait le disque de l'hôte.
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: "${LOG_MAX_FILE:-5}"
 
     # Le processus n'écrit que dans DATA_DIR : le reste du système de fichiers
     # peut rester en lecture seule, et aucune capacité n'est nécessaire.
