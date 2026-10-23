@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const NUM = new Intl.NumberFormat("fr-FR");
 const BOOLS = ["checkExternal","checkAssets","respectRobots","includeSubdomains","followNofollow","ignoreQuery","collectSeo","useSitemap"];
 const NUMS = ["concurrency","delayMs","maxDepth","maxPages","timeoutMs"];
-const STRS = ["sitemapUrl"];
+const STRS = ["sitemapUrl","userAgent"];
 const MAX_TABLE_ROWS = 500;
 const TITLE = document.title;
 const IDLE = '<p class="note"><b>Aucun audit lancé</b>Entrez l’URL d’un site pour explorer ses pages et relever chaque lien cassé avec la page qui le contient.</p>';
@@ -755,6 +755,8 @@ function applyOpts(m) {
     for (const k of BOOLS) if (typeof m.opts[k] === "boolean") $(k).checked = m.opts[k];
     for (const k of NUMS) if (Number.isFinite(m.opts[k])) $(k).value = m.opts[k];
     for (const k of STRS) $(k).value = typeof m.opts[k] === "string" ? m.opts[k] : "";
+    // Agent inconnu, ou audit antérieur à ce réglage : le select retombe sur son défaut HTML.
+    if ($("userAgent").selectedIndex < 0) $("userAgent").value = $("userAgent").querySelector("[selected]").value;
     $("exclude").value = (m.opts.exclude || []).join("\n");
   }
   hints();
@@ -1417,7 +1419,7 @@ function hints() {
   const moved = [...BOOLS, ...NUMS].filter((k) => {
     const el = $(k);
     return el.type === "checkbox" ? el.checked !== el.defaultChecked : Number(el.value) !== Number(el.defaultValue);
-  }).length;
+  }).length + (!$("userAgent").selectedOptions[0]?.defaultSelected ? 1 : 0);
   hint("h-cfg", moved ? `${moved} réglage${moved > 1 ? "s" : ""} modifié${moved > 1 ? "s" : ""}` : "par défaut", moved > 0);
   const n = $("exclude").value.split("\n").filter((t) => t.trim()).length;
   const sm = $("sitemapUrl").value.trim() ? " · sitemap imposé" : $("useSitemap").checked ? "" : " · sitemap ignoré";

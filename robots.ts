@@ -11,14 +11,14 @@ export class Robots {
   /** URLs declared by `Sitemap:` lines, in file order. */
   readonly sitemaps: string[] = [];
 
-  static async fetch(origin: string, ua: string, signal?: AbortSignal): Promise<Robots> {
+  static async fetch(origin: string, agent: { ua: string; token: string }, signal?: AbortSignal): Promise<Robots> {
     const r = new Robots();
     try {
       const res = await fetch(new URL("/robots.txt", origin), {
-        headers: { "user-agent": ua },
+        headers: { "user-agent": agent.ua },
         signal: signal ?? AbortSignal.timeout(10_000),
       });
-      if (res.ok) r.parse(await res.text(), ua);
+      if (res.ok) r.parse(await res.text(), agent.token);
       else await res.body?.cancel();
     } catch {
       /* unreachable or malformed robots.txt: allow everything */
@@ -27,8 +27,8 @@ export class Robots {
   }
 
   /** Keeps only the groups targeting `*` or our own token. */
-  parse(txt: string, ua: string) {
-    const token = ua.toLowerCase().split("/")[0]!;
+  parse(txt: string, agentToken: string) {
+    const token = agentToken.toLowerCase();
     let applies = false;
     let sawUa = false;
 

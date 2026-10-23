@@ -86,6 +86,7 @@ défauts, motifs d'exclusion — et chacune reste ouverte ou fermée d'une visit
 | Ignorer les query strings | désactivé | `?utm=…` ne crée plus d'URL distincte |
 | Relever les balises SEO | activé | `title`, `description`, `h1`, canonique, `robots`, `lang` et volume de texte |
 | Lire le sitemap du site | activé | ajoute les URLs du sitemap au crawl, et révèle les pages orphelines |
+| Identité (user agent) | Crowler | agent annoncé : Crowler, Googlebot, Googlebot smartphone, Bingbot ou Chrome |
 | Sitemap | vide | force une URL de sitemap ; vide = découverte par `robots.txt` puis `/sitemap.xml` |
 | Notifier sur le bureau à la fin | activé | notification système quand l'audit se termine |
 | Parallèle | 8 | requêtes simultanées |
@@ -94,6 +95,13 @@ défauts, motifs d'exclusion — et chacune reste ouverte ou fermée d'une visit
 | Pages max | 10 000 | borne la mémoire |
 | Timeout | 15 000 ms | par requête, en-têtes **et** corps |
 | Exclure du crawl | vide | expressions régulières, une par ligne |
+
+L'identité sert aux sites qui ne rendent pas le même HTML à tout le monde : beaucoup
+d'applications non SSR ne servent une page prérendue qu'aux robots d'indexation, et un crawl
+annoncé sous son vrai nom n'y verrait qu'une coquille vide sans aucun lien. Les règles de
+`robots.txt` écrites pour l'agent choisi s'appliquent alors au crawl — se faire passer pour
+Googlebot, c'est aussi en accepter les `Disallow`. L'identité fait partie des réglages d'un
+preset, donc d'un déclenchement par webhook.
 
 Les deux premiers réglages sont des catégories indépendantes : le premier porte sur
 l'emplacement (hors domaine ou non), le second sur le rôle (asset ou non). Une image hébergée

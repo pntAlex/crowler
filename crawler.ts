@@ -6,7 +6,28 @@ import { log, type Level, type Line } from "./log";
 import { Robots } from "./robots";
 import { collect } from "./sitemap";
 
-export const UA = "Crowler/1.0 (+link auditor)";
+/**
+ * Agents au choix : l'UA envoyé, et le nom sous lequel robots.txt le désigne.
+ * Le jeton ne se déduit pas de l'UA — « Mozilla/5.0 (compatible; Googlebot/2.1 »
+ * commence par « Mozilla » — et se faire passer pour un robot sans suivre les
+ * règles écrites pour lui serait malhonnête autant qu'inexact.
+ */
+export const AGENTS = {
+  crowler: { ua: "Crowler/1.0 (+link auditor)", token: "crowler" },
+  googlebot: { ua: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", token: "googlebot" },
+  "googlebot-mobile": {
+    ua: "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) "
+      + "Chrome/136.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    token: "googlebot",
+  },
+  bingbot: { ua: "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)", token: "bingbot" },
+  chrome: {
+    ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    token: "chrome",
+  },
+} as const;
+
+export type AgentName = keyof typeof AGENTS;
 const REF_CAP = 20; // referers kept per URL; refCount stays exact beyond it
 const MAX_BODY = 8 * 1024 * 1024;
 /* Hard caps on the stored SEO strings. The real length is kept beside the
@@ -77,6 +98,8 @@ export type Options = {
   collectSeo: boolean;
   /** Seed the crawl with the sitemap, on top of the links found while crawling. */
   useSitemap: boolean;
+  /** Clé de AGENTS : l'identité prise par le crawl, requêtes et robots.txt compris. */
+  userAgent: AgentName;
   /** Forces one sitemap URL; empty means discover it from robots.txt then /sitemap.xml. */
   sitemapUrl: string;
   concurrency: number;
@@ -96,6 +119,7 @@ export const DEFAULTS: Options = {
   ignoreQuery: false,
   collectSeo: true,
   useSitemap: true,
+  userAgent: "crowler",
   sitemapUrl: "",
   concurrency: 8,
   delayMs: 0,
@@ -248,6 +272,8 @@ export class Crawl {
   private timer: ReturnType<typeof setInterval> | null = null;
   private counts = { ok: 0, redirect: 0, clientError: 0, serverError: 0, failed: 0 };
   private excludes: RegExp[];
+  /** `?? AGENTS.crowler` : un presets.json édité à la main peut nommer n'importe quoi. */
+  private agent: { ua: string; token: string };
   private excluded = 0;
   private orphans = 0;
   private blockPrivate: boolean;
@@ -259,6 +285,7 @@ export class Crawl {
     blockPrivate = true,
   ) {
     this.opts = { ...DEFAULTS, ...opts };
+    this.agent = AGENTS[this.opts.userAgent] ?? AGENTS.crowler;
     this.excludes = compileExcludes(this.opts.exclude).res;
     const u = new URL(startUrl);
     this.blockPrivate = blockPrivate;
@@ -301,7 +328,7 @@ export class Crawl {
         `profondeur ${this.opts.maxDepth || "illimitée"}, timeout ${this.opts.timeoutMs} ms`,
     );
     if (this.opts.respectRobots) {
-      this.robots = await Robots.fetch(u.origin, UA, this.ac.signal);
+      this.robots = await Robots.fetch(u.origin, this.agent, this.ac.signal);
       if (this.robots.crawlDelay > this.opts.delayMs) {
         this.opts.delayMs = this.robots.crawlDelay;
         this.say("info", `robots.txt impose un délai de ${this.robots.crawlDelay} ms entre deux requêtes`);
@@ -346,13 +373,13 @@ export class Crawl {
     if (forced) {
       seeds = [forced];
     } else {
-      const robots = this.robots ?? (await Robots.fetch(seed.origin, UA, this.ac.signal));
+      const robots = this.robots ?? (await Robots.fetch(seed.origin, this.agent, this.ac.signal));
       seeds = robots.sitemaps.length ? robots.sitemaps : [new URL("/sitemap.xml", seed.origin).href];
     }
     if (this.ac.signal.aborted) return;
 
     const found = await collect(seeds, {
-      ua: UA,
+      ua: this.agent.ua,
       signal: this.ac.signal,
       timeoutMs: this.opts.timeoutMs,
       // A sitemap is remote input: it can point anywhere, the SSRF guard included.
@@ -557,7 +584,7 @@ export class Crawl {
       method,
       redirect: "manual",
       headers: {
-        "user-agent": UA,
+        "user-agent": this.agent.ua,
         accept: method === "GET" ? "text/html,application/xhtml+xml,*/*;q=0.5" : "*/*",
         "accept-language": "*",
       },

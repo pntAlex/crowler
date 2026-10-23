@@ -98,6 +98,7 @@ select.in{
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a94a6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 .fld{display:flex;flex-direction:column;gap:6px;min-width:0}
+.set .sw + .fld{margin-top:12px}
 .fld > span{font-size:13px;font-weight:600;color:var(--ink-2)}
 .fld > span em{font-style:normal;font-weight:400;color:var(--ink-3);margin-left:3px}
 .fld small{font-size:13px;line-height:1.45;color:var(--ink-3)}

@@ -1,6 +1,6 @@
 import * as chat from "./chat";
 import {
-  compileExcludes, Crawl, DEFAULTS, isBroken, isPrivateHost, matchExclude, MAX_EXCLUDES,
+  AGENTS, compileExcludes, Crawl, DEFAULTS, isBroken, isPrivateHost, matchExclude, MAX_EXCLUDES,
   normalize, wire, type Options, type Row,
 } from "./crawler";
 import { csvResponse } from "./csv";
@@ -62,6 +62,7 @@ function clampOpts(raw: unknown): Options {
     ignoreQuery: bool("ignoreQuery"),
     collectSeo: bool("collectSeo"),
     useSitemap: bool("useSitemap"),
+    userAgent: typeof o.userAgent === "string" && o.userAgent in AGENTS ? (o.userAgent as Options["userAgent"]) : DEFAULTS.userAgent,
     sitemapUrl: typeof o.sitemapUrl === "string" ? o.sitemapUrl.trim().slice(0, 2048) : "",
     concurrency: num("concurrency", 1, 64),
     delayMs: num("delayMs", 0, 10_000),

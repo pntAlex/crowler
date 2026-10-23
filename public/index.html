@@ -128,6 +128,16 @@
               <label class="sw"><input type="checkbox" id="collectSeo" checked>Relever les balises SEO</label>
               <label class="sw"><input type="checkbox" id="useSitemap" checked>Lire le sitemap du site</label>
               <label class="sw"><input type="checkbox" id="notify" checked>Notifier sur le bureau à la fin <small id="notify-hint"></small></label>
+              <label class="fld"><span>Identité <em>user agent</em></span>
+                <select class="in" id="userAgent">
+                  <option value="crowler" selected>Crowler</option>
+                  <option value="googlebot">Googlebot</option>
+                  <option value="googlebot-mobile">Googlebot smartphone</option>
+                  <option value="bingbot">Bingbot</option>
+                  <option value="chrome">Chrome</option>
+                </select>
+                <small>Certains sites servent une page prérendue aux robots d’indexation. Les règles
+                  de robots.txt écrites pour l’agent choisi s’appliquent alors au crawl.</small></label>
             </fieldset>
           </div>
         </div>

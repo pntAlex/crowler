@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { compileExcludes, Crawl, isBroken, isOrphan, isPrivateHost, normalize, referers, wire, type Row } from "./crawler";
+import { AGENTS, compileExcludes, Crawl, isBroken, isOrphan, isPrivateHost, normalize, referers, wire, type Row } from "./crawler";
 import { BROKEN_HEADER, brokenRows, PAGES_HEADER, pagesRows } from "./report";
 import { collect } from "./sitemap";
 import { Robots } from "./robots";
@@ -465,7 +465,7 @@ test("garde SSRF : réseaux privés et hostnames nus refusés", () => {
 
 test("robots.txt : préfixe le plus long, wildcards et Allow prioritaire", () => {
   const r = new Robots();
-  r.parse(`User-agent: *\nDisallow: /admin\nAllow: /admin/public\nDisallow: /*.json$\nCrawl-delay: 1`, "crowler/1.0");
+  r.parse(`User-agent: *\nDisallow: /admin\nAllow: /admin/public\nDisallow: /*.json$\nCrawl-delay: 1`, "crowler");
   expect(r.allows("/")).toBe(true);
   expect(r.allows("/admin/secret")).toBe(false);
   expect(r.allows("/admin/public/page")).toBe(true);
@@ -474,9 +474,35 @@ test("robots.txt : préfixe le plus long, wildcards et Allow prioritaire", () =>
   expect(r.crawlDelay).toBe(1000);
 });
 
+test("robots.txt : les règles suivent l'agent imité, pas l'UA envoyé", () => {
+  const r = new Robots();
+  r.parse(`User-agent: *\nDisallow: /\n\nUser-agent: Googlebot\nAllow: /`, AGENTS.googlebot.token);
+  expect(r.allows("/produits")).toBe(true);
+});
+
+test("le user agent choisi part dans les requêtes", async () => {
+  const seen: string[] = [];
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      seen.push(req.headers.get("user-agent") ?? "");
+      return new Response("<a href=\"/autre\">suite</a>", { headers: { "content-type": "text/html" } });
+    },
+  });
+  try {
+    const c = new Crawl(`http://127.0.0.1:${srv.port}/`,
+      { respectRobots: false, useSitemap: false, timeoutMs: 2500, userAgent: "googlebot" }, () => {}, false);
+    await c.run();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((ua) => ua === AGENTS.googlebot.ua)).toBe(true);
+  } finally {
+    srv.stop(true);
+  }
+});
+
 test("robots.txt : un groupe ciblant un autre agent est ignoré", () => {
   const r = new Robots();
-  r.parse(`User-agent: BadBot\nDisallow: /\n\nUser-agent: *\nDisallow: /tmp`, "crowler/1.0");
+  r.parse(`User-agent: BadBot\nDisallow: /\n\nUser-agent: *\nDisallow: /tmp`, "crowler");
   expect(r.allows("/")).toBe(true);
   expect(r.allows("/tmp/x")).toBe(false);
 });
@@ -566,7 +592,7 @@ const withSitemap = (opts = {}) => crawl({ useSitemap: true, ...opts });
 
 test("robots.txt : la ligne Sitemap est retenue, y compris avant tout User-agent", () => {
   const r = new Robots();
-  r.parse(`Sitemap: https://exemple.fr/sitemap.xml\nUser-agent: *\nDisallow: /prive\nSitemap: https://exemple.fr/autre.xml`, "crowler/1.0");
+  r.parse(`Sitemap: https://exemple.fr/sitemap.xml\nUser-agent: *\nDisallow: /prive\nSitemap: https://exemple.fr/autre.xml`, "crowler");
   expect(r.sitemaps).toEqual(["https://exemple.fr/sitemap.xml", "https://exemple.fr/autre.xml"]);
   // La ligne Sitemap n'appartient à aucun groupe : elle ne doit pas en ouvrir un.
   expect(r.allows("/prive/x")).toBe(false);
@@ -574,7 +600,7 @@ test("robots.txt : la ligne Sitemap est retenue, y compris avant tout User-agent
 
 test("robots.txt : une ligne Sitemap d'un autre groupe est retenue aussi", () => {
   const r = new Robots();
-  r.parse(`User-agent: BadBot\nDisallow: /\nSitemap: https://exemple.fr/s.xml`, "crowler/1.0");
+  r.parse(`User-agent: BadBot\nDisallow: /\nSitemap: https://exemple.fr/s.xml`, "crowler");
   expect(r.sitemaps).toEqual(["https://exemple.fr/s.xml"]);
   expect(r.allows("/")).toBe(true); // le groupe, lui, reste ignoré
 });
